@@ -1,6 +1,11 @@
 # HackyTab Agent
 
-A Chrome extension that notices when a window gets crowded, offers to help, and then groups, names, colors, and dedupes your tabs based on what you are doing. It asks before it closes anything. Spec: [SPEC.md](SPEC.md). Plan: [PROJECT.md](PROJECT.md).
+A Chrome extension that notices when a window gets crowded, offers to help, and then groups, names, colors, and dedupes your tabs based on what you are doing. It asks before it closes anything.
+
+- **What it does, in plain language:** [DESCRIPTION.md](DESCRIPTION.md)
+- **Design and requirements** (features F1 to F33, model contract, storage, demo script): [SPEC.md](SPEC.md)
+- **Security notes** (threat model, what leaves the browser, what is stored where): [SECURITY.md](SECURITY.md)
+- **Project plan:** [PROJECT.md](PROJECT.md)
 
 ## Run it
 
@@ -20,11 +25,11 @@ To add another provider, add an entry to `PROVIDERS` in [agent/providers.js](age
 
 ## Grouping
 
-Tabs are grouped by **category**: Video, Sports, News, Retail, Business, in that order on the tab strip. Inside a group, tabs are ordered by website. Anything that fits no category stays ungrouped, and a category needs at least two tabs to become a group. Settings offers **By website** as the alternative. When the model is unavailable, a local domain-to-category map in [agent/local.js](agent/local.js) produces the same layout.
+Tabs are grouped by **category**: Video, Sports, News, Retail, Business, in that order on the tab strip. Inside a group, tabs are ordered by website. Anything that fits no category stays ungrouped, and a category needs at least two tabs to become a group. Settings offers **By website** as the alternative. When the model is unavailable, a local domain-to-category map in [agent/local.js](agent/local.js) produces the same layout. The rules are F30 to F33 in [SPEC.md](SPEC.md); the user-facing behavior is described in [DESCRIPTION.md](DESCRIPTION.md).
 
 ## Demo
 
-One command gives a clean starting point every time:
+The demo script (what to click, what the audience sees) is section 11 of [SPEC.md](SPEC.md). One command gives a clean starting point every time:
 
 ```bash
 tools/demo.sh
@@ -47,6 +52,8 @@ Runs the Node unit tests for the local logic (URL normalization, duplicates, sta
 
 ## Layout
 
+The architecture behind this layout is section 9 of [SPEC.md](SPEC.md).
+
 ```
 manifest.json          MV3 manifest
 background.js          service worker: detection, messaging, apply, undo, redo, replay
@@ -61,5 +68,8 @@ demo/                  demo tab set and opener
 test/                  Node unit tests
 tools/demo.sh, demo.pl launch Chrome with a scratch profile, load the extension, open the demo tabs
 tools/run-chrome.py    same launch without the demo tabs
+SPEC.md                design: requirements, model contract, storage, demo script
+DESCRIPTION.md         product description for a general reader
 SECURITY.md            threat model, what is stored where, mitigations
+PROJECT.md             hackathon plan and open decisions
 ```
