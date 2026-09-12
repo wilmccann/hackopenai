@@ -8,7 +8,7 @@
 #
 # Chrome 137+ ignores --load-extension in the branded build, so the extension is
 # installed with the DevTools command Extensions.loadUnpacked over a private
-# debugging pipe (fds 3 and 4). No TCP debugging port is opened (SECURITY.md).
+# debugging pipe (fds 3 and 4). No TCP debugging port is opened (docs/SECURITY.md).
 # The demo window itself is opened by the extension's own demo/open-demo.js,
 # which also discards the tabs marked "stale" so they count as stale (F12) and
 # arms the window so the prompt fires after two more tabs (spec section 11).

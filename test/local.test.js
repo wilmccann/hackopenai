@@ -176,7 +176,7 @@ test("resolveProvider picks the per-provider key and ignores the legacy settings
 });
 
 // ---------------------------------------------------------------------------
-// Security hardening (SECURITY.md)
+// Security hardening (docs/SECURITY.md)
 // ---------------------------------------------------------------------------
 test("resolveProvider rejects unknown and prototype-inherited provider names", async () => {
   const { resolveProvider, isKnownProvider } = await import("../agent/providers.js");

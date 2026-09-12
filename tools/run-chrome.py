@@ -11,7 +11,7 @@
 #   python3 tools/run-chrome.py /other/ext      # loads another folder
 #   python3 tools/run-chrome.py --keep-profile  # do not delete the profile on exit
 #
-# Security notes (see SECURITY.md):
+# Security notes (see docs/SECURITY.md):
 #   - The DevTools connection is a private pipe (fds 3 and 4) owned by this
 #     process only. Do NOT add --remote-debugging-port: a TCP debugging port
 #     lets any local process attach to the browser, open extension pages, and
