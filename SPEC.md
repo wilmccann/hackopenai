@@ -90,7 +90,7 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 - F27. Only the last run is undoable.
 
 ### 5.8 Settings
-- F28. Side panel Settings section: threshold (number, min 5, max 100), re-prompt delta (default 5), stale age in hours (default 24), model provider (dropdown, populated from `PROVIDERS` in `agent/providers.js`), model id (text, blank means provider default), API key (password field, label comes from the provider's `keyLabel`), grouping basis (see section 6), pause toggle, "Reset Never list."
+- F28. Side panel Settings section: threshold (number, min 5, max 100), re-prompt delta (default 5), stale age in hours (default 24), model provider (dropdown, populated from `PROVIDERS` in `agent/providers.js`), model (dropdown, populated from the selected provider's `models` list, first option is the provider default), API key (password field, one stored per provider in `settings.apiKeys`, label comes from the provider's `keyLabel`), grouping basis (see section 6), pause toggle, "Reset Never list."
 - F29. Settings persist in `chrome.storage.local` and take effect immediately without reload.
 
 ## 6. Grouping basis (CLOSED)
@@ -112,11 +112,14 @@ Decision needed by 1:15 pm. It changes Person B's prompt but not the schema.
 | Name | Endpoint | Default model | Structured output |
 |---|---|---|---|
 | `anthropic` (default) | `POST https://api.anthropic.com/v1/messages` | `claude-fable-5-1` | Native `output_config.format` json_schema |
-| `nvidia` | `POST https://integrate.api.nvidia.com/v1/chat/completions` (OpenAI-compatible NIM) | `moonshotai/kimi-k2-instruct`, or any hosted open model such as GLM | `response_format: json_object` plus schema in the system prompt; local validation (F14) is the contract |
+| `openai` | `POST https://api.openai.com/v1/chat/completions` | `gpt-5.6-terra` (also Luna, Sol, GPT-6 Astra) | `response_format: json_schema` strict, plus schema in the system prompt |
+| `nvidia` | `POST https://integrate.api.nvidia.com/v1/chat/completions` (OpenAI-compatible NIM) | `deepseek-ai/deepseek-v4-flash-0731` with thinking off (also Nemotron 3 Super, gpt-oss-20b, GLM 5.3 Flash, Kimi K3) | No `response_format` (DeepSeek hangs when it is sent); the schema goes in the system prompt and local validation (F14) is the contract |
 
-Switching to an open model is a one-line change (`provider: "nvidia"`) plus the matching key in Settings. The Settings dropdown can also override the provider and model id at runtime without a reload (F28, F29). The NVIDIA adapter is built from a generic `openaiCompatible()` factory, so any other OpenAI-style endpoint is a new `PROVIDERS` entry with a different `baseUrl`.
+Each provider lists its selectable models in `PROVIDERS[name].models`. The Settings model dropdown shows only the selected provider's list, so the open models appear only when NVIDIA is chosen; nobody types a model id. NVIDIA ids were copied from NVIDIA's own list at `GET https://integrate.api.nvidia.com/v1/models` on Sep 12 2026 (`deepseek-ai/deepseek-v4-pro-0813` is listed there but deprecated Sep 13, and `moonshotai/kimi-k2.6` returns 404, so both are excluded). Measured from the extension on a small prompt: DeepSeek V4 Flash 0.4 s, Nemotron 3 Super 1 s, gpt-oss-20b 1.6 s, GLM 5.3 Flash 6 s (thinking cannot be disabled), Kimi K3 over 40 s; Nemotron 3 Ultra and Gemma 4 timed out at 30 s and are excluded. Model entries may carry `extra` request fields; DeepSeek uses `chat_template_kwargs.thinking: false`. OpenAI ids were copied from platform.openai.com/docs/models the same day.
 
-**Where the call runs:** the extension service worker, using `fetch`. No build step, no bundler, no SDK. The API key is read from `chrome.storage.local`. List every provider host in `host_permissions` (`https://api.anthropic.com/*`, `https://integrate.api.nvidia.com/*`) so requests are not subject to page CORS. Anthropic requests send `anthropic-dangerous-direct-browser-access: true`.
+Switching provider is a one-line change in `agent/config.js` plus the matching key in Settings, or a dropdown change in Settings at runtime without a reload (F28, F29). Both OpenAI and NVIDIA adapters come from one `openaiCompatible()` factory, so any other OpenAI-style endpoint is a new `PROVIDERS` entry with a different `baseUrl`.
+
+**Where the call runs:** the extension service worker, using `fetch`. No build step, no bundler, no SDK. The API key is read from `chrome.storage.local`. List every provider host in `host_permissions` (`https://api.anthropic.com/*`, `https://api.openai.com/*`, `https://integrate.api.nvidia.com/*`) so requests are not subject to page CORS. Anthropic requests send `anthropic-dangerous-direct-browser-access: true`.
 **Isolation:** `agent/plan.js` exports `async function planTabs(tabs, settings) -> Plan`. It calls `resolveProvider(settings)` from `agent/providers.js`, hands the system prompt, user payload, and schema to `provider.call()`, then parses and validates. Nothing outside `agent/` knows which provider is behind it.
 
 **Anthropic request shape (the `anthropic` adapter)**
@@ -234,7 +237,7 @@ sidepanel.html/.js     prompt, spinner, review checklist, settings, hidden dev s
 content/excerpt.js     injected on demand, returns page excerpt
 agent/plan.js          planTabs(): builds prompt, calls the active provider, validates plan
 agent/config.js        MODEL_CONFIG: the one file to edit to swap the model (provider, model id, effort)
-agent/providers.js     PROVIDERS registry: anthropic, nvidia (OpenAI-compatible); resolveProvider()
+agent/providers.js     PROVIDERS registry: anthropic, openai, nvidia; each lists its models; resolveProvider()
 agent/local.js         normalizeUrl(), findDuplicates(), findStale(), domainFallbackPlan()
 agent/schema.json      the plan schema above
 demo/tabs.json         Person C's messy window as a URL list, also B's test fixture
@@ -243,13 +246,13 @@ icons/                 toolbar and notification icons
 test/local.test.js     Node unit tests for agent/local.js and plan validation (`npm test`, no deps)
 ```
 
-**Permissions:** `tabs`, `tabGroups`, `sidePanel`, `storage`, `scripting`, `notifications`. **Host permissions:** `<all_urls>` (for excerpts), `https://api.anthropic.com/*`, and `https://integrate.api.nvidia.com/*`. Adding a provider means adding its host here; `host_permissions` is static in MV3.
+**Permissions:** `tabs`, `tabGroups`, `sidePanel`, `storage`, `scripting`, `notifications`. **Host permissions:** `<all_urls>` (for excerpts), `https://api.anthropic.com/*`, `https://api.openai.com/*`, and `https://integrate.api.nvidia.com/*`. Adding a provider means adding its host here; `host_permissions` is static in MV3.
 
 **Messaging:** side panel and service worker talk over `chrome.runtime.sendMessage` with `{ type, windowId, payload }`. The panel sends requests; the worker pushes `STATE` with the window's full panel state `{ phase, count, summary, groups, review, canUndo, canRedo, closedCount, message }` where `phase` is one of `idle | prompt | planning | review | done | error`. Panel to worker types: `GET_STATE`, `ORGANIZE`, `DISMISS`, `NEVER`, `CONFIRM_CLOSE`, `SKIP_CLOSE`, `REOPEN`, `UNDO`, `REDO`, `REPLAY`, `SETTINGS_CHANGED`, `RESET_NEVER`, `OPEN_DEMO`. Per-window panel state is kept in `chrome.storage.session` so it survives service worker restarts.
 
 **State in `chrome.storage.local`:**
 ```
-settings: { threshold, repromptDelta, staleHours, provider, model, apiKey, groupingBasis, paused }
+settings: { threshold, repromptDelta, staleHours, provider, model, apiKeys: { [provider]: key }, groupingBasis, paused }
 windows:  { [windowId]: { lastPromptedCount, never } }
 lastRun:  { windowId, snapshot, plan, createdGroupIds, undone, closed: [{url,title}] }
 ```

@@ -86,3 +86,25 @@ test("buildUserMessage carries basis, candidates, and excerpt", () => {
   assert.equal(msg.duplicate_candidates.length, 1);
   assert.equal(msg.max_groups, 6);
 });
+
+test("every provider lists its default model and resolveProvider ignores foreign ids", async () => {
+  const { PROVIDERS, resolveProvider } = await import("../agent/providers.js");
+  const { MODEL_CONFIG } = await import("../agent/config.js");
+  for (const [name, p] of Object.entries(PROVIDERS)) {
+    const ids = p.models.map((m) => m.id);
+    assert.ok(ids.length >= 1, `${name} has models`);
+    assert.ok(ids.includes(p.defaults.model), `${name} default ${p.defaults.model} is in its list`);
+    const override = MODEL_CONFIG.overrides[name]?.model;
+    if (override) assert.ok(ids.includes(override), `${name} config override ${override} is in its list`);
+  }
+  assert.equal(resolveProvider({ provider: "nvidia", model: "gpt-6-astra" }).opts.model, "deepseek-ai/deepseek-v4-flash-0731");
+  assert.equal(resolveProvider({ provider: "nvidia", model: "moonshotai/kimi-k3" }).opts.model, "moonshotai/kimi-k3");
+  assert.equal(resolveProvider({ provider: "openai" }).opts.model, "gpt-5.6-terra");
+});
+
+test("resolveProvider picks the per-provider key with legacy fallback", async () => {
+  const { resolveProvider } = await import("../agent/providers.js");
+  assert.equal(resolveProvider({ provider: "nvidia", apiKeys: { nvidia: "nv", openai: "oa" } }).apiKey, "nv");
+  assert.equal(resolveProvider({ provider: "openai", apiKeys: { nvidia: "nv" }, apiKey: "legacy" }).apiKey, "legacy");
+  assert.equal(resolveProvider({ provider: "anthropic" }).apiKey, "");
+});

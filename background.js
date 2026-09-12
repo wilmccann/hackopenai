@@ -20,6 +20,7 @@ export const DEFAULT_SETTINGS = {
   provider: "",
   model: "",
   apiKey: "",
+  apiKeys: {},
   groupingBasis: "task",
   paused: false
 };

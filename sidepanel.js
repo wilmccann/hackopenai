@@ -4,7 +4,7 @@
 import { PROVIDERS } from "./agent/providers.js";
 import { MODEL_CONFIG } from "./agent/config.js";
 
-const DEFAULT_SETTINGS = { threshold: 15, repromptDelta: 5, staleHours: 24, provider: "", model: "", apiKey: "", groupingBasis: "task", paused: false };
+const DEFAULT_SETTINGS = { threshold: 15, repromptDelta: 5, staleHours: 24, provider: "", model: "", apiKey: "", apiKeys: {}, groupingBasis: "task", paused: false };
 const $ = (sel) => document.querySelector(sel);
 
 let windowId = null;
@@ -152,13 +152,39 @@ function fillSettingsForm() {
   }
   for (const [k, v] of Object.entries(settings)) {
     const el = form.elements[k];
-    if (!el) continue;
+    if (!el || k === "apiKey") continue;
     if (el.type === "checkbox") el.checked = !!v;
     else el.value = v ?? "";
   }
-  const p = PROVIDERS[effectiveProvider()];
+  fillModelSelect();
+}
+
+function keyFor(name) {
+  return (settings.apiKeys && settings.apiKeys[name]) || settings.apiKey || "";
+}
+
+// The model dropdown only ever shows the selected provider's models (F28).
+function fillModelSelect() {
+  const form = $("#settings-form");
+  const name = effectiveProvider();
+  const p = PROVIDERS[name];
   $("#apikey-label").textContent = p?.keyLabel || "API key";
-  form.elements.model.placeholder = MODEL_CONFIG.overrides[effectiveProvider()]?.model || p?.defaults?.model || "";
+  const sel = form.elements.model;
+  sel.replaceChildren();
+  const defaultId = MODEL_CONFIG.overrides[name]?.model || p?.defaults?.model || "";
+  const def = document.createElement("option");
+  def.value = "";
+  def.textContent = `Provider default (${defaultId})`;
+  sel.append(def);
+  for (const m of p?.models || []) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.label;
+    sel.append(o);
+  }
+  const known = (p?.models || []).some((m) => m.id === settings.model);
+  sel.value = known ? settings.model : "";
+  form.elements.apiKey.value = keyFor(name);
 }
 
 async function saveSettings() {
@@ -166,12 +192,18 @@ async function saveSettings() {
   const next = { ...settings };
   for (const k of Object.keys(DEFAULT_SETTINGS)) {
     const el = form.elements[k];
-    if (!el) continue;
+    if (!el || k === "apiKey") continue;
     if (el.type === "checkbox") next[k] = el.checked;
     else if (el.type === "number") next[k] = Number(el.value) || DEFAULT_SETTINGS[k];
     else next[k] = el.value.trim();
   }
   next.threshold = Math.min(100, Math.max(5, next.threshold));
+  const providerChanged = next.provider !== settings.provider;
+  if (providerChanged) next.model = "";
+  // The key field belongs to the provider that was showing when it was typed.
+  const keyOwner = providerChanged ? effectiveProvider() : next.provider || MODEL_CONFIG.provider;
+  next.apiKeys = { ...(settings.apiKeys || {}), [keyOwner]: form.elements.apiKey.value.trim() };
+  next.apiKey = "";
   settings = next;
   await chrome.storage.local.set({ settings });
   fillSettingsForm();
@@ -200,5 +232,5 @@ chrome.runtime.onMessage.addListener((msg) => {
   fillSettingsForm();
   const res = await send("GET_STATE");
   if (res?.state) render({ ...res.state, closedCount: res.closedCount });
-  if (!settings.apiKey) $("#settings").open = true;
+  if (!keyFor(effectiveProvider())) $("#settings").open = true;
 })().catch((e) => flash(e.message));

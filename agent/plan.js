@@ -108,9 +108,10 @@ export function sanitizePlan(plan, tabs) {
 
 // F13, F14. One request, one retry with the validation error appended, then throw.
 export async function planTabs(tabs, settings, candidates = {}) {
-  if (!settings.apiKey) throw new Error("No API key set. Open Settings in the side panel.");
+  const { name, provider, opts, apiKey, timeoutMs } = resolveProvider(settings);
+  if (!apiKey) throw new Error(`No ${provider.keyLabel} set. Open Settings in the side panel.`);
   const schema = await loadSchema();
-  const { name, provider, opts, timeoutMs } = resolveProvider(settings);
+  settings = { ...settings, apiKey };
   const base = buildUserMessage(tabs, settings, candidates);
   const started = Date.now();
   let lastError = null;
