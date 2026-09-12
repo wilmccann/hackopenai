@@ -178,3 +178,133 @@ export function remapPlan(plan, fingerprints, tabs) {
   };
   return { plan: remapped, matched: idMap.size, total: referenced.size };
 }
+
+// ---------------------------------------------------------------------------
+// F30 to F33. Category grouping and ordering.
+// ---------------------------------------------------------------------------
+// Fixed category list, in tab-strip order. "Other" is implicit: a tab that fits
+// no category stays ungrouped (F31, F33).
+export const CATEGORIES = Object.freeze(["Video", "Sports", "News", "Retail", "Business"]);
+export const MAX_GROUPS = 12;
+
+// Local domain-to-category map for the no-model fallback (F33) and for tabs
+// the model leaves unassigned. Matched against the registrable domain and, for
+// the keyword entries, against the full host (news.google.com, sports.yahoo.com).
+const CATEGORY_DOMAINS = {
+  Video: ["youtube.com", "youtu.be", "netflix.com", "hulu.com", "vimeo.com", "twitch.tv", "disneyplus.com", "primevideo.com", "max.com", "hbomax.com", "peacocktv.com", "paramountplus.com", "tiktok.com", "dailymotion.com", "plex.tv", "crunchyroll.com", "tubitv.com", "roku.com", "appletv.com"],
+  Sports: ["espn.com", "nba.com", "nfl.com", "mlb.com", "nhl.com", "fifa.com", "uefa.com", "mlssoccer.com", "pgatour.com", "olympics.com", "skysports.com", "bleacherreport.com", "cbssports.com", "foxsports.com", "theathletic.com", "nbcsports.com", "si.com", "sports.yahoo.com", "goal.com", "atptour.com", "wtatennis.com", "formula1.com", "nascar.com", "ufc.com", "wwe.com"],
+  News: ["nytimes.com", "news.google.com", "washingtonpost.com", "wsj.com", "bbc.com", "bbc.co.uk", "cnn.com", "reuters.com", "apnews.com", "theguardian.com", "foxnews.com", "nbcnews.com", "cbsnews.com", "abcnews.go.com", "npr.org", "latimes.com", "usatoday.com", "politico.com", "axios.com", "news.yahoo.com", "msnbc.com", "aljazeera.com", "time.com", "theatlantic.com", "newsweek.com", "huffpost.com", "vox.com", "thehill.com", "bostonglobe.com", "chicagotribune.com", "sfchronicle.com"],
+  Retail: ["amazon.com", "bestbuy.com", "staples.com", "sears.com", "macys.com", "target.com", "walmart.com", "homedepot.com", "lowes.com", "costco.com", "ebay.com", "etsy.com", "wayfair.com", "ikea.com", "nordstrom.com", "kohls.com", "nike.com", "adidas.com", "zappos.com", "shein.com", "temu.com", "aliexpress.com", "newegg.com", "officedepot.com", "jcpenney.com", "gap.com", "oldnavy.com", "bhphotovideo.com", "chewy.com", "overstock.com", "samsclub.com", "cvs.com", "walgreens.com"],
+  Business: ["boeing.com", "linkedin.com", "bloomberg.com", "forbes.com", "cnbc.com", "ft.com", "marketwatch.com", "fortune.com", "businessinsider.com", "economist.com", "hbr.org", "crunchbase.com", "sec.gov", "glassdoor.com", "indeed.com", "salesforce.com", "investopedia.com", "morningstar.com", "fool.com", "barrons.com", "inc.com", "entrepreneur.com", "fastcompany.com", "techcrunch.com"]
+};
+const CATEGORY_HOST_KEYWORDS = { Sports: ["sports"], News: ["news"], Retail: ["shop", "store"], Video: ["video", "tv"] };
+const DOMAIN_TO_CATEGORY = new Map();
+for (const [cat, list] of Object.entries(CATEGORY_DOMAINS)) for (const d of list) DOMAIN_TO_CATEGORY.set(d, cat);
+
+// Returns one of CATEGORIES or "" (Other). Pure host lookup, no page content.
+export function categoryOf(tab) {
+  const host = hostOf(tab?.url);
+  if (!host) return "";
+  const domain = registrableDomain(host);
+  if (DOMAIN_TO_CATEGORY.has(host)) return DOMAIN_TO_CATEGORY.get(host);
+  if (DOMAIN_TO_CATEGORY.has(domain)) return DOMAIN_TO_CATEGORY.get(domain);
+  // Subdomain keywords: sports.yahoo.com, news.ycombinator.com, shop.example.com.
+  const labels = host.split(".");
+  for (const [cat, words] of Object.entries(CATEGORY_HOST_KEYWORDS)) {
+    if (labels.some((l) => words.includes(l))) return cat;
+  }
+  return "";
+}
+
+export const categoryKey = (cat) => `category:${cat.toLowerCase()}`;
+const categoryColor = (cat) => COLORS[CATEGORIES.indexOf(cat) % COLORS.length];
+
+function groupableByCategory(tabs) {
+  const byCat = new Map(CATEGORIES.map((c) => [c, []]));
+  for (const t of tabs) {
+    if (t.pinned) continue;
+    const c = categoryOf(t);
+    if (c) byCat.get(c).push(t);
+  }
+  return [...byCat.entries()].filter(([, list]) => list.length >= 2);
+}
+
+// F33. Fallback plan (no model): one group per category with 2 or more tabs,
+// in CATEGORIES order. Tabs that fit no category (Other) stay ungrouped.
+export function categoryFallbackPlan(tabs, { duplicates = [], stale = [] } = {}) {
+  const groups = [];
+  const assignments = [];
+  for (const [cat, list] of groupableByCategory(tabs)) {
+    const key = categoryKey(cat);
+    groups.push({ key, title: cat, color: categoryColor(cat) });
+    for (const t of list) assignments.push({ tab_id: t.id, group_key: key });
+  }
+  const summary = groups.length
+    ? `Grouped ${assignments.length} tabs into ${groups.length} categories.`
+    : "No category has more than one tab to group.";
+  return orderPlan({ summary, groups, assignments, duplicates, stale }, tabs);
+}
+
+// Tabs the model left unassigned join the plan's group for their local
+// category when that group exists, or form a new one when at least two of
+// them share a category. Other stays ungrouped (decision 3).
+export function mergeUnassignedByCategory(plan, tabs) {
+  const assigned = new Set(plan.assignments.map((a) => a.tab_id));
+  const leftover = tabs.filter((t) => !assigned.has(t.id) && !t.pinned);
+  const groups = [...plan.groups];
+  const assignments = [...plan.assignments];
+  const byTitle = new Map(groups.map((g) => [g.title.toLowerCase(), g]));
+  const pending = new Map();
+  for (const t of leftover) {
+    const c = categoryOf(t);
+    if (!c) continue;
+    const g = byTitle.get(c.toLowerCase());
+    if (g) assignments.push({ tab_id: t.id, group_key: g.key });
+    else pending.set(c, [...(pending.get(c) || []), t]);
+  }
+  for (const [c, list] of pending) {
+    if (list.length < 2) continue;
+    let key = categoryKey(c);
+    while (groups.some((g) => g.key === key)) key += "_";
+    groups.push({ key, title: c, color: categoryColor(c) });
+    for (const t of list) assignments.push({ tab_id: t.id, group_key: key });
+  }
+  return { ...plan, groups, assignments };
+}
+
+// F31 (and F20): a group exists only for two or more tabs. The model is told
+// this but does not always comply; singletons go back to ungrouped here.
+export function dropSingletonGroups(plan) {
+  const count = new Map();
+  for (const a of plan.assignments) count.set(a.group_key, (count.get(a.group_key) || 0) + 1);
+  const keep = new Set(plan.groups.filter((g) => (count.get(g.key) || 0) >= 2).map((g) => g.key));
+  if (keep.size === plan.groups.length) return plan;
+  return { ...plan, groups: plan.groups.filter((g) => keep.has(g.key)), assignments: plan.assignments.filter((a) => keep.has(a.group_key)) };
+}
+
+// F32. Order groups by category (CATEGORIES order first, other titles after,
+// alphabetically), and tabs within a group by website: registrable domain,
+// then full host, then original tab position. Returns a new plan whose
+// groups and assignments are in the order they should appear in the strip.
+export function orderPlan(plan, tabs) {
+  const byId = new Map(tabs.map((t) => [t.id, t]));
+  const rank = (g) => {
+    const i = CATEGORIES.findIndex((c) => c.toLowerCase() === String(g.title).toLowerCase());
+    return i === -1 ? CATEGORIES.length : i;
+  };
+  const groups = [...plan.groups].sort((a, b) => rank(a) - rank(b) || String(a.title).localeCompare(String(b.title)));
+  const siteKey = (id) => {
+    const t = byId.get(id);
+    const host = hostOf(t?.url);
+    return [registrableDomain(host) || host || "~", host || "~", t?.index ?? 0];
+  };
+  const cmp = (x, y) => {
+    const [dx, hx, ix] = siteKey(x.tab_id);
+    const [dy, hy, iy] = siteKey(y.tab_id);
+    return dx.localeCompare(dy) || hx.localeCompare(hy) || ix - iy;
+  };
+  const assignments = [];
+  for (const g of groups) assignments.push(...plan.assignments.filter((a) => a.group_key === g.key).sort(cmp));
+  for (const a of plan.assignments) if (!groups.some((g) => g.key === a.group_key)) assignments.push(a);
+  return { ...plan, groups, assignments };
+}

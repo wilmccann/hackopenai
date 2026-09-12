@@ -1,27 +1,29 @@
 {
   "name": "Messy demo window (spec section 11)",
-  "notes": "17 tabs. 3 stale (marked; open-demo.js discards them so they count as stale), 3 news, 3 Google apps, 7 retail, 1 duplicate (marked).",
+  "notes": "23 tabs, deliberately shuffled. 3 Google apps (Other), 3 news + 1 duplicate (marked), 6 retail, 2 business, 2 sports, 3 video, 3 stale (marked; open-demo.js discards them so they count as stale). Every category forms a group; Google apps and stale tabs stay ungrouped.",
   "tabs": [
     { "url": "https://www.google.com/", "topic": "google" },
-    { "url": "https://mail.google.com/", "topic": "google" },
-    { "url": "https://calendar.google.com/", "topic": "google" },
-
-    { "url": "https://www.nytimes.com/section/technology", "topic": "news" },
-    { "url": "https://www.nytimes.com/section/business", "topic": "news" },
-    { "url": "https://news.google.com/", "topic": "news" },
-
     { "url": "https://www.bestbuy.com/", "topic": "shopping" },
-    { "url": "https://www.staples.com/", "topic": "shopping" },
-    { "url": "https://www.boeing.com/", "topic": "shopping" },
-    { "url": "https://www.sears.com/", "topic": "shopping" },
-    { "url": "https://www.macys.com/", "topic": "shopping" },
-    { "url": "https://www.target.com/", "topic": "shopping" },
-    { "url": "https://www.homedepot.com/", "topic": "shopping" },
-
+    { "url": "https://www.nytimes.com/section/technology", "topic": "news" },
+    { "url": "https://www.youtube.com/watch?v=0EqSXDwTq6U", "topic": "video" },
     { "url": "https://www.weather.gov/", "topic": "stale", "stale": true },
+    { "url": "https://www.espn.com/", "topic": "sports" },
+    { "url": "https://mail.google.com/", "topic": "google" },
+    { "url": "https://www.macys.com/", "topic": "shopping" },
+    { "url": "https://www.boeing.com/", "topic": "business" },
+    { "url": "https://news.google.com/", "topic": "news" },
     { "url": "https://www.allrecipes.com/recipe/23600/worlds-best-lasagna/", "topic": "stale", "stale": true },
+    { "url": "https://www.netflix.com/", "topic": "video" },
+    { "url": "https://www.staples.com/", "topic": "shopping" },
+    { "url": "https://www.nytimes.com/section/technology?utm_source=share", "topic": "news", "duplicate": true },
+    { "url": "https://www.nba.com/", "topic": "sports" },
+    { "url": "https://www.target.com/", "topic": "shopping" },
+    { "url": "https://calendar.google.com/", "topic": "google" },
+    { "url": "https://www.linkedin.com/", "topic": "business" },
     { "url": "https://en.wikipedia.org/wiki/Labor_Day", "topic": "stale", "stale": true },
-
-    { "url": "https://www.nytimes.com/section/technology?utm_source=share", "topic": "news", "duplicate": true }
+    { "url": "https://www.sears.com/", "topic": "shopping" },
+    { "url": "https://www.youtube.com/watch?v=iz1rIp1-b-Y&list=RDiz1rIp1-b-Y&start_radio=1", "topic": "video" },
+    { "url": "https://www.nytimes.com/section/world", "topic": "news" },
+    { "url": "https://www.homedepot.com/", "topic": "shopping" }
   ]
 }

@@ -68,7 +68,7 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 
 ### 5.4 Planning (model call)
 - F13. Send the tab list (with excerpts, duplicate candidates, stale candidates) to Claude Fable 5.1 in one request. Details in section 7.
-- F14. The response must match the plan schema in section 8. Validate locally. If validation fails once, retry once with the validation error appended. If it fails twice, fall back to local domain grouping (F20).
+- F14. The response must match the plan schema in section 8. Validate locally. If validation fails once, retry once with the validation error appended. If it fails twice, fall back to the local plan for the current basis (F33 for category, F20 for website).
 - F15. Time budget: 8 seconds. Show a spinner and the phrase "Reading your tabs" while waiting.
 
 ### 5.5 Apply
@@ -76,7 +76,13 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 - F17. For each plan group, `chrome.tabs.group({ tabIds, createProperties: { windowId } })`, then `chrome.tabGroups.update(groupId, { title, color, collapsed: false })`.
 - F18. Tabs the plan leaves unassigned stay ungrouped. Pinned tabs are never grouped or moved.
 - F19. Order groups in the tab strip in the order the plan lists them, using `chrome.tabGroups.move`.
-- F20. Fallback plan (no model): one group per registrable domain with 2 or more tabs, titled with the domain, colors cycled. Singletons ungrouped.
+- F20. Fallback plan for the website basis (no model): one group per registrable domain with 2 or more tabs, titled with the domain, colors cycled. Singletons ungrouped.
+
+### 5.6 Category grouping and ordering
+- F30. Grouping basis is "category" (default) or "website". The earlier "task" basis is removed; stored settings with `task` migrate to `category` on install.
+- F31. Fixed category list, in this order: Video, Sports, News, Retail, Business. In category mode every group title must be exactly one of these (case-insensitive, canonicalized), at most one group per category. A tab that fits no category (Other) stays ungrouped. A group exists only when at least two tabs belong to it; single-tab groups are dissolved locally (`dropSingletonGroups`) whatever the model returned.
+- F32. Ordering. After planning, groups are ordered by category (list order; in website mode, alphabetically by title) and tabs within a group by website: registrable domain, then full host, then original position. Applies to both bases. `applyPlan` moves the assigned tabs into that order right after the pinned tabs before grouping, so every group forms from a contiguous sorted run; unassigned tabs follow. The snapshot (F16) also records the original order of the unpinned tabs and undo restores it.
+- F33. Category fallback (no model): a local domain-to-category map in `agent/local.js` (`categoryOf`), plus subdomain keywords such as `news.` and `sports.`. Unknown domains are Other. Tabs the model leaves unassigned get the same local rule: they join the plan's group for their category, or form a new group when at least two share one.
 
 ### 5.6 Review and close
 - F21. After apply, the side panel shows two sections: Duplicates and Stale. Each row: favicon, title, domain, reason, checkbox. Duplicates are checked by default. Stale are unchecked by default.
@@ -90,20 +96,20 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 - F27. Only the last run is undoable.
 
 ### 5.8 Settings
-- F28. Side panel Settings section: threshold (number, min 5, max 100), re-prompt delta (default 5), stale age in hours (default 24), model provider (dropdown, populated from `PROVIDERS` in `agent/providers.js`), model (dropdown, populated from the selected provider's `models` list, first option is the provider default), API key (password field, one stored per provider in `settings.apiKeys`, label comes from the provider's `keyLabel`; the stored key is never written back into the field, the panel shows "Key set (…last4)" with Replace and Clear buttons and a key is saved only when the user types one), "Send page text to the model" toggle (default on, F10), grouping basis (see section 6), pause toggle, "Reset Never list", "Forget last run" (wipes `lastRun` and the closed-tab list).
+- F28. Side panel Settings section: threshold (number, min 5, max 100), re-prompt delta (default 5), stale age in hours (default 24), model provider (dropdown, populated from `PROVIDERS` in `agent/providers.js`), model (dropdown, populated from the selected provider's `models` list, first option is the provider default), API key (password field, one stored per provider in `settings.apiKeys`, label comes from the provider's `keyLabel`; the stored key is never written back into the field, the panel shows "Key set (…last4)" with Replace and Clear buttons and a key is saved only when the user types one), "Send page text to the model" toggle (default on, F10), grouping basis: category or website (F30), pause toggle, "Reset Never list", "Forget last run" (wipes `lastRun` and the closed-tab list).
 - F29. Settings persist in `chrome.storage.local` and take effect immediately without reload.
 
-## 6. Grouping basis (CLOSED)
+## 6. Grouping basis (CLOSED, revised)
 
-Use Hybrid option (#C below): 
+Decided 3:05 pm: **category** replaces the earlier task basis (option C below). The model assigns each tab to one of the fixed categories in F31 and the tab strip is ordered by category, then website (F32). Website grouping stays as the second option in Settings. The local rules for the same basis fill in whatever the model leaves out and take over entirely when the model fails (F20, F33).
+
+Earlier options, for the record:
 
 | Option | What the model does | Pros | Cons |
 |---|---|---|---|
 | A. By website | Group by domain. No model needed for grouping. | Trivial, deterministic, instant | Chrome already does this. Weak demo. |
 | B. By task | Model infers the user's activities ("Apartment hunt", "Q3 planning doc", "React debugging") and assigns each tab to one. | Novel, impressive, exactly the pitch | Needs page excerpts, occasionally wrong |
-| C. Hybrid (recommended) | Model groups by task. Domain grouping is the deterministic fallback (F20) and is used for any tab the model leaves unassigned. User can switch basis in Settings. | Best demo with a safety net | Slightly more code, mostly already required by F14 |
-
-Decision needed by 1:15 pm. It changes Person B's prompt but not the schema.
+| C. Hybrid (original choice) | Model groups by task. Domain grouping is the deterministic fallback (F20) and is used for any tab the model leaves unassigned. User can switch basis in Settings. | Best demo with a safety net | Replaced: judges asked for predictable categories |
 
 ## 7. Model integration
 
@@ -158,7 +164,7 @@ Headers: `content-type: application/json`, `x-api-key: <key>`, `anthropic-versio
 **System prompt (Person B owns; draft)**
 > You organize a person's open browser tabs into a small number of groups based on what they are trying to accomplish, not which website a tab is on. Prefer 3 to 6 groups. Group names are 1 to 3 words, specific, in title case. Assign each tab to exactly one group or leave it unassigned if it fits nowhere. Pick a distinct color per group from the allowed list. Confirm or reject each duplicate and stale candidate; reject a stale candidate if it looks like reference material the person will want again. Return only the JSON.
 
-**User message:** a JSON object `{ "tabs": [...], "duplicate_candidates": [...], "stale_candidates": [...], "grouping_basis": "task" | "website", "max_groups": 6 }`.
+**User message:** a JSON object `{ "tabs": [...], "duplicate_candidates": [...], "stale_candidates": [...], "grouping_basis": "category" | "website", "categories": ["Video", "Sports", "News", "Retail", "Business"], "max_groups": 12, "allowed_colors": [...] }`.
 
 **Budget:** a 25-tab window with excerpts is roughly 6K input tokens and under 1K output. At Fable pricing that is a few cents per run.
 
@@ -238,7 +244,7 @@ content/excerpt.js     injected on demand, returns page excerpt
 agent/plan.js          planTabs(): builds prompt, calls the active provider, validates plan
 agent/config.js        MODEL_CONFIG: the one file to edit to swap the model (provider, model id, effort)
 agent/providers.js     PROVIDERS registry: anthropic, openai, nvidia; each lists its models; resolveProvider()
-agent/local.js         normalizeUrl(), findDuplicates(), findStale(), domainFallbackPlan()
+agent/local.js         normalizeUrl(), findDuplicates(), findStale(), domainFallbackPlan(), categoryOf(), categoryFallbackPlan(), orderPlan()
 agent/schema.json      the plan schema above
 demo/tabs.json         Person C's messy window as a URL list, also B's test fixture
 demo/open-demo.js      opens demo/tabs.json into a fresh window; discards the tabs marked stale
@@ -276,11 +282,11 @@ closed: { windowId, items: [{url,title}] }
 
 ## 11. Demo script (Person C)
 
-1. Run `tools/demo.sh`. It launches a scratch Chrome, loads the extension, and opens a fresh window from `demo/tabs.json`: 17 tabs. Google search, Gmail, Calendar, three news tabs (two nytimes.com, news.google.com) plus one nytimes duplicate, seven retail sites, three stale tabs (discarded on open). The same window can be opened from the side panel's hidden dev section (Alt+Shift+D, "Open demo window"). The opener pre-sets the window so the prompt fires after exactly two more tabs.
-2. Open two more tabs by hand. The toolbar badge shows 19 and a toast appears (see section 14, item 3). Click the toolbar icon. The side panel opens with the prompt.
-3. Click Yes. Spinner for a few seconds. Tab strip reorganizes into 4 or 5 named colored groups.
+1. Run `tools/demo.sh`. It launches a scratch Chrome, loads the extension, and opens a fresh window from `demo/tabs.json`: 23 tabs. Google search, Gmail, Calendar, three news tabs (two nytimes.com, news.google.com) plus one nytimes duplicate, six retail, two business, two sports, three video, three stale tabs (discarded on open). The same window can be opened from the side panel's hidden dev section (Alt+Shift+D, "Open demo window"). The opener pre-sets the window so the prompt fires after exactly two more tabs.
+2. Open two more tabs by hand. The toolbar badge shows 25 and a toast appears (see section 14, item 3). Click the toolbar icon. The side panel opens with the prompt.
+3. Click Yes. Spinner for a few seconds. Tab strip reorganizes into Video (netflix, then youtube), Sports (espn, nba), News (news.google.com, then the nytimes tabs), Retail (bestbuy, homedepot, macys, sears, staples, target), and Business (boeing, linkedin). The Google apps and the stale tabs stay ungrouped (Other).
 4. Panel shows 1 duplicate checked and 3 stale unchecked. Check one stale, press Confirm. Two tabs close.
-5. Press Undo. Groups dissolve. Press Redo. They return.
+5. Press Undo. Groups dissolve and the tabs return to their original order. Press Redo. They return.
 6. Open Settings, change threshold to 10, show that it took effect.
 Backup: screen recording of the same flow, recorded by 3:15.
 

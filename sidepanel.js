@@ -5,7 +5,7 @@ import { PROVIDERS, isKnownProvider } from "./agent/providers.js";
 import { MODEL_CONFIG } from "./agent/config.js";
 import { COLORS } from "./agent/local.js";
 
-const DEFAULT_SETTINGS = { threshold: 15, repromptDelta: 5, staleHours: 24, provider: "", model: "", apiKeys: {}, groupingBasis: "task", sendPageText: true, paused: false };
+const DEFAULT_SETTINGS = { threshold: 15, repromptDelta: 5, staleHours: 24, provider: "", model: "", apiKeys: {}, groupingBasis: "category", sendPageText: true, paused: false };
 const $ = (sel) => document.querySelector(sel);
 
 let windowId = null;
@@ -237,7 +237,7 @@ async function saveSettings() {
   next.threshold = Math.min(100, Math.max(5, next.threshold));
   // Provider ids are whitelisted; anything else falls back to the config default ("").
   if (next.provider && !isKnownProvider(next.provider)) next.provider = "";
-  if (!["task", "website"].includes(next.groupingBasis)) next.groupingBasis = "task";
+  if (!["category", "website"].includes(next.groupingBasis)) next.groupingBasis = "category";
   const providerChanged = next.provider !== settings.provider;
   if (providerChanged) next.model = "";
   // The key field belongs to the provider that was showing when it was typed.

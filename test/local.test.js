@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeUrl, registrableDomain, findDuplicates, findStale, domainFallbackPlan, mergeUnassignedByDomain, fingerprintTabs, remapPlan } from "../agent/local.js";
+import { normalizeUrl, registrableDomain, findDuplicates, findStale, domainFallbackPlan, mergeUnassignedByDomain, fingerprintTabs, remapPlan, CATEGORIES, categoryOf, categoryFallbackPlan, mergeUnassignedByCategory, orderPlan, dropSingletonGroups } from "../agent/local.js";
 import { validatePlan, sanitizePlan, buildUserMessage, sanitizeText, urlForModel, SYSTEM_PROMPT, LIMITS } from "../agent/plan.js";
 
 const H = 3600 * 1000;
@@ -49,7 +49,7 @@ test("domainFallbackPlan groups domains with 2+ tabs and leaves singletons", () 
   assert.equal(plan.groups.length, 2);
   assert.equal(plan.assignments.length, 4);
   assert.notEqual(plan.groups[0].color, plan.groups[1].color);
-  assert.deepEqual(validatePlan(plan, tabs), []);
+  assert.deepEqual(validatePlan(plan, tabs, { basis: "website" }), []);
 });
 
 test("mergeUnassignedByDomain appends domain groups for leftovers only", () => {
@@ -59,13 +59,13 @@ test("mergeUnassignedByDomain appends domain groups for leftovers only", () => {
   assert.equal(merged.groups.length, 2);
   assert.equal(merged.groups[1].title, "b.com");
   assert.notEqual(merged.groups[1].color, "blue");
-  assert.deepEqual(validatePlan(merged, tabs), []);
+  assert.deepEqual(validatePlan(merged, tabs, { basis: "website" }), []);
 });
 
 test("validatePlan catches unknown ids, pinned, double assignment, bad color", () => {
   const tabs = [tab(1, "https://a.com"), tab(2, "https://b.com", { pinned: true })];
   const plan = { summary: "s", groups: [{ key: "g", title: "G", color: "magenta" }], assignments: [{ tab_id: 1, group_key: "g" }, { tab_id: 1, group_key: "g" }, { tab_id: 2, group_key: "g" }, { tab_id: 99, group_key: "nope" }], duplicates: [{ tab_id: 1, keep_tab_id: 1, reason: "" }], stale: [{ tab_id: 42, reason: "" }] };
-  const errors = validatePlan(plan, tabs);
+  const errors = validatePlan(plan, tabs, { basis: "website" });
   assert.ok(errors.some((e) => e.includes("invalid color")));
   assert.ok(errors.some((e) => e.includes("assigned twice")));
   assert.ok(errors.some((e) => e.includes("pinned tab 2")));
@@ -73,8 +73,8 @@ test("validatePlan catches unknown ids, pinned, double assignment, bad color", (
   assert.ok(errors.some((e) => e.includes("unknown group_key nope")));
   assert.ok(errors.some((e) => e.includes("keeps itself")));
   assert.ok(errors.some((e) => e.includes("unknown tab_id 42")));
-  const fixed = sanitizePlan(plan, tabs);
-  assert.deepEqual(validatePlan(fixed, tabs), []);
+  const fixed = sanitizePlan(plan, tabs, { basis: "website" });
+  assert.deepEqual(validatePlan(fixed, tabs, { basis: "website" }), []);
   assert.equal(fixed.assignments.length, 1);
 });
 
@@ -84,7 +84,70 @@ test("buildUserMessage carries basis, candidates, and excerpt", () => {
   assert.equal(msg.grouping_basis, "website");
   assert.equal(msg.tabs[0].excerpt, "hello");
   assert.equal(msg.duplicate_candidates.length, 1);
-  assert.equal(msg.max_groups, 6);
+  assert.equal(msg.max_groups, 12);
+  assert.deepEqual(msg.categories, [...CATEGORIES]);
+  assert.equal(buildUserMessage(tabs, { groupingBasis: "task" }, {}, now).grouping_basis, "category");
+});
+
+// F30 to F33
+test("categoryOf maps hosts by domain and subdomain keyword, Other is empty", () => {
+  assert.equal(categoryOf({ url: "https://www.youtube.com/watch?v=x" }), "Video");
+  assert.equal(categoryOf({ url: "https://news.google.com/" }), "News");
+  assert.equal(categoryOf({ url: "https://sports.yahoo.com/nba" }), "Sports");
+  assert.equal(categoryOf({ url: "https://www.boeing.com/" }), "Business");
+  assert.equal(categoryOf({ url: "https://www.macys.com/" }), "Retail");
+  assert.equal(categoryOf({ url: "https://mail.google.com/" }), "");
+  assert.equal(categoryOf({ url: "chrome://newtab" }), "");
+});
+
+test("categoryFallbackPlan groups categories with 2+ tabs in fixed order, leaves Other and singletons ungrouped", () => {
+  const tabs = [
+    tab(1, "https://www.macys.com/"), tab(2, "https://www.nytimes.com/section/business"), tab(3, "https://mail.google.com/"),
+    tab(4, "https://www.bestbuy.com/"), tab(5, "https://news.google.com/"), tab(6, "https://www.boeing.com/"), tab(7, "https://www.netflix.com/", { pinned: true })
+  ];
+  const plan = categoryFallbackPlan(tabs);
+  assert.deepEqual(plan.groups.map((g) => g.title), ["News", "Retail"]);
+  assert.equal(plan.assignments.length, 4);
+  assert.deepEqual(validatePlan(plan, tabs), []);
+  assert.deepEqual(validatePlan(plan, tabs, { basis: "website" }), []);
+});
+
+test("orderPlan sorts groups by category order and tabs within a group by website", () => {
+  const tabs = [tab(1, "https://www.target.com/"), tab(2, "https://www.bestbuy.com/x"), tab(3, "https://www.bestbuy.com/a"), tab(4, "https://www.nytimes.com/"), tab(5, "https://www.espn.com/"), tab(6, "https://www.espn.com/nba")];
+  const plan = { summary: "", duplicates: [], stale: [],
+    groups: [{ key: "r", title: "Retail", color: "blue" }, { key: "n", title: "News", color: "red" }, { key: "s", title: "Sports", color: "green" }],
+    assignments: [{ tab_id: 1, group_key: "r" }, { tab_id: 2, group_key: "r" }, { tab_id: 3, group_key: "r" }, { tab_id: 4, group_key: "n" }, { tab_id: 6, group_key: "s" }, { tab_id: 5, group_key: "s" }] };
+  const out = orderPlan(plan, tabs);
+  assert.deepEqual(out.groups.map((g) => g.title), ["Sports", "News", "Retail"]);
+  assert.deepEqual(out.assignments.map((a) => a.tab_id), [5, 6, 4, 2, 3, 1]);
+});
+
+test("mergeUnassignedByCategory joins existing category groups, forms new ones for pairs, leaves Other alone", () => {
+  const tabs = [tab(1, "https://www.nytimes.com/"), tab(2, "https://www.cnn.com/"), tab(3, "https://www.espn.com/"), tab(4, "https://www.nba.com/"), tab(5, "https://www.boeing.com/"), tab(6, "https://mail.google.com/")];
+  const plan = { summary: "", duplicates: [], stale: [], groups: [{ key: "n", title: "News", color: "red" }], assignments: [{ tab_id: 1, group_key: "n" }] };
+  const out = mergeUnassignedByCategory(plan, tabs);
+  assert.deepEqual(out.groups.map((g) => g.title), ["News", "Sports"]);
+  assert.equal(out.assignments.length, 4);
+  assert.ok(!out.assignments.some((a) => a.tab_id === 5 || a.tab_id === 6));
+  assert.deepEqual(validatePlan(out, tabs), []);
+});
+
+test("dropSingletonGroups ungroups one-tab groups and keeps the rest", () => {
+  const plan = { summary: "", duplicates: [], stale: [], groups: [{ key: "n", title: "News", color: "red" }, { key: "b", title: "Business", color: "blue" }], assignments: [{ tab_id: 1, group_key: "n" }, { tab_id: 2, group_key: "n" }, { tab_id: 3, group_key: "b" }] };
+  const out = dropSingletonGroups(plan);
+  assert.deepEqual(out.groups.map((g) => g.title), ["News"]);
+  assert.deepEqual(out.assignments.map((a) => a.tab_id), [1, 2]);
+});
+
+test("F31: category mode rejects titles outside the fixed list and repeated categories; website mode does not", () => {
+  const tabs = [tab(1, "https://a.com"), tab(2, "https://b.com")];
+  const mk = (titles) => ({ summary: "", duplicates: [], stale: [], groups: titles.map((t, i) => ({ key: `g${i}`, title: t, color: "blue" })), assignments: [] });
+  assert.ok(validatePlan(mk(["Apartment Hunt"]), tabs).some((e) => e.includes("allowed categories")));
+  assert.ok(validatePlan(mk(["News", "news"]), tabs).some((e) => e.includes("more than one group")));
+  assert.deepEqual(validatePlan(mk(["news"]), tabs), []);
+  assert.deepEqual(validatePlan(mk(["Apartment Hunt"]), tabs, { basis: "website" }), []);
+  const fixed = sanitizePlan(mk(["Apartment Hunt", "news", "News", "Retail"]), tabs);
+  assert.deepEqual(fixed.groups.map((g) => g.title), ["News", "Retail"]);
 });
 
 test("every provider lists its default model and resolveProvider ignores foreign ids", async () => {
@@ -180,7 +243,7 @@ test("sanitizePlan caps and cleans model-written strings", () => {
     duplicates: [{ tab_id: 2, keep_tab_id: 1, reason: "d\n" + "q".repeat(500) }],
     stale: [{ tab_id: 1, reason: "" }]
   };
-  const candidates = { duplicates: [{ tab_id: 2, keep_tab_id: 1, reason: "" }], stale: [{ tab_id: 1, reason: "" }] };
+  const candidates = { basis: "website", duplicates: [{ tab_id: 2, keep_tab_id: 1, reason: "" }], stale: [{ tab_id: 1, reason: "" }] };
   const fixed = sanitizePlan(plan, tabs, candidates);
   assert.equal(fixed.summary.length, LIMITS.summary);
   assert.equal(fixed.groups.length, 1, "group whose title is only control characters is dropped");
@@ -289,7 +352,7 @@ test("M6: replay remaps a cached plan by URL fingerprint and refuses a poor matc
   assert.deepEqual(r.plan.assignments.map((a) => a.tab_id).sort(), [40, 41, 43]);
   assert.deepEqual(r.plan.duplicates, [{ tab_id: 42, keep_tab_id: 41, reason: "dup" }]);
   assert.deepEqual(r.plan.stale, [{ tab_id: 40, reason: "old" }]);
-  assert.deepEqual(validatePlan(r.plan, after, { duplicates: r.plan.duplicates, stale: r.plan.stale }), []);
+  assert.deepEqual(validatePlan(r.plan, after, { basis: "website", duplicates: r.plan.duplicates, stale: r.plan.stale }), []);
 
   // Ids reused by unrelated tabs: nothing matches by fingerprint, so nothing is touched.
   const reused = [tab(1, "https://bank.example"), tab(2, "https://mail.example"), tab(3, "https://x.example"), tab(4, "https://y.example")];

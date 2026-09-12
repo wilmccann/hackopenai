@@ -3,10 +3,10 @@
   "additionalProperties": false,
   "required": ["groups", "assignments", "duplicates", "stale", "summary"],
   "properties": {
-    "summary": { "type": "string", "description": "One sentence shown to the user, e.g. 'Grouped 22 tabs into 4 tasks, found 3 duplicates.'" },
+    "summary": { "type": "string", "description": "One sentence shown to the user, e.g. 'Grouped 17 tabs into News and Retail, found 1 duplicate.'" },
     "groups": {
       "type": "array",
-      "maxItems": 8,
+      "maxItems": 12,
       "items": {
         "type": "object",
         "additionalProperties": false,

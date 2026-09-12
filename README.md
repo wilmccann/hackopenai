@@ -18,6 +18,10 @@ Edit [agent/config.js](agent/config.js). Set `provider` to `"anthropic"` (Claude
 
 To add another provider, add an entry to `PROVIDERS` in [agent/providers.js](agent/providers.js) and its host to `host_permissions` in [manifest.json](manifest.json).
 
+## Grouping
+
+Tabs are grouped by **category**: Video, Sports, News, Retail, Business, in that order on the tab strip. Inside a group, tabs are ordered by website. Anything that fits no category stays ungrouped, and a category needs at least two tabs to become a group. Settings offers **By website** as the alternative. When the model is unavailable, a local domain-to-category map in [agent/local.js](agent/local.js) produces the same layout.
+
 ## Demo
 
 One command gives a clean starting point every time:
@@ -26,7 +30,7 @@ One command gives a clean starting point every time:
 tools/demo.sh
 ```
 
-It opens Chrome with a throwaway profile, loads the extension, and opens the 17 tabs from [demo/tabs.json](demo/tabs.json) in a fresh window: Google search, Gmail, Calendar, three news tabs (two nytimes.com, news.google.com, plus one duplicate), seven retail sites, and three stale tabs that are discarded so they show up in the clean-up list. Open two more tabs by hand and the prompt appears. Quit Chrome or press Ctrl+C to finish; the profile is deleted (pass `--keep-profile` to keep it). Any API key must be entered in Settings after each launch.
+It opens Chrome with a throwaway profile, loads the extension, and opens the 23 tabs from [demo/tabs.json](demo/tabs.json) in a fresh window: Google search, Gmail, Calendar, three news tabs (two nytimes.com, news.google.com, plus one duplicate), six retail sites, two business, two sports, three video, and three stale tabs that are discarded so they show up in the clean-up list. Open two more tabs by hand and the prompt appears. Quit Chrome or press Ctrl+C to finish; the profile is deleted (pass `--keep-profile` to keep it). Any API key must be entered in Settings after each launch.
 
 The same window can be opened from inside the extension: press **Alt+Shift+D** in the side panel to reveal the dev section.
 
@@ -51,7 +55,7 @@ content/excerpt.js     injected on demand, returns up to 300 chars of page text
 agent/config.js        the one file to edit to swap the model
 agent/providers.js     provider adapters: anthropic, openai, nvidia (each lists its models)
 agent/plan.js          planTabs(): prompt, call, validate, retry
-agent/local.js         normalizeUrl, findDuplicates, findStale, domainFallbackPlan
+agent/local.js         normalizeUrl, findDuplicates, findStale, categoryOf, categoryFallbackPlan, orderPlan, domainFallbackPlan
 agent/schema.json      the plan JSON schema (the A/B contract)
 demo/                  demo tab set and opener
 test/                  Node unit tests

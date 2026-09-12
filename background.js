@@ -7,6 +7,10 @@ import {
   findStale,
   domainFallbackPlan,
   mergeUnassignedByDomain,
+  categoryFallbackPlan,
+  mergeUnassignedByCategory,
+  dropSingletonGroups,
+  orderPlan,
   registrableDomain,
   hostOf,
   fingerprintTabs,
@@ -24,7 +28,7 @@ export const DEFAULT_SETTINGS = {
   provider: "",
   model: "",
   apiKeys: {},
-  groupingBasis: "task",
+  groupingBasis: "category",
   sendPageText: true,
   paused: false
 };
@@ -194,6 +198,11 @@ chrome.runtime.onInstalled.addListener(async () => {
     delete next.apiKey;
     await chrome.storage.local.set({ settings: next });
   }
+  // F30: the "task" basis was replaced by "category".
+  if (settings.groupingBasis === "task") {
+    const { settings: cur } = await chrome.storage.local.get("settings");
+    await chrome.storage.local.set({ settings: { ...cur, groupingBasis: "category" } });
+  }
 });
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 
@@ -266,13 +275,26 @@ async function takeSnapshot(windowId, rawTabs) {
   }
   const tabs = {};
   for (const t of rawTabs) tabs[t.id] = t.groupId ?? GROUP_NONE;
-  return { tabs, groups };
+  // F32 changes tab order too, so undo needs the original order of the unpinned tabs.
+  const order = [...rawTabs].sort((a, b) => a.index - b.index).filter((t) => !t.pinned).map((t) => t.id);
+  return { tabs, groups, order };
 }
 
 async function applyPlan(windowId, plan, rawTabs) {
   const byId = new Map(rawTabs.map((t) => [t.id, t]));
   const pinnedCount = rawTabs.filter((t) => t.pinned).length;
   const created = [];
+  // F32: lay the assigned tabs out in plan order (groups in order, tabs within a
+  // group by website) right after the pinned tabs, so each group forms from a
+  // contiguous, already sorted run. Unassigned tabs slide after them.
+  const ordered = plan.assignments.map((a) => a.tab_id).filter((id) => byId.has(id) && !byId.get(id).pinned);
+  if (ordered.length) {
+    try {
+      await chrome.tabs.move(ordered, { index: pinnedCount });
+    } catch (e) {
+      console.warn("reorder failed:", e.message);
+    }
+  }
   for (const group of plan.groups) {
     const tabIds = plan.assignments
       .filter((a) => a.group_key === group.key)
@@ -371,16 +393,21 @@ async function organize(windowId) {
   const duplicates = findDuplicates(tabs); // F11
   const stale = findStale(tabs, settings.staleHours); // F12
 
+  const website = settings.groupingBasis === "website";
   let plan;
   let source = "model";
   try {
     plan = await planTabs(tabs, settings, { duplicates, stale }); // F13, F14
   } catch (e) {
-    console.warn("planTabs failed, using domain fallback:", e.message);
-    plan = domainFallbackPlan(tabs, { duplicates, stale }); // F20
+    console.warn("planTabs failed, using local fallback:", e.message);
+    plan = website ? domainFallbackPlan(tabs, { duplicates, stale }) : categoryFallbackPlan(tabs, { duplicates, stale }); // F20, F33
     source = `fallback: ${sanitizeText(e.message, 300)}`;
   }
-  plan = mergeUnassignedByDomain(plan, tabs); // section 6, option C
+  // Section 6: tabs the model left out get the local rule for the same basis.
+  // In category mode, tabs that fit no category (Other) stay ungrouped.
+  plan = website ? mergeUnassignedByDomain(plan, tabs) : mergeUnassignedByCategory(plan, tabs);
+  plan = dropSingletonGroups(plan); // F31: a group needs at least two tabs
+  plan = orderPlan(plan, tabs); // F32: category order, then website within a group
   await finishRun(windowId, plan, rawTabs, tabs, source);
 }
 
@@ -434,6 +461,17 @@ async function undo(requestingWindowId) {
 
   const toUngroup = current.filter((t) => createdSet.has(t.groupId)).map((t) => t.id);
   if (toUngroup.length) await chrome.tabs.ungroup(toUngroup);
+
+  // Put the unpinned tabs back in their pre-run order (F32) before regrouping.
+  const order = (snapshot.order || []).filter((id) => alive.has(id));
+  if (order.length) {
+    const pinnedCount = current.filter((t) => t.pinned).length;
+    try {
+      await chrome.tabs.move(order, { index: pinnedCount });
+    } catch (e) {
+      console.warn("restore order failed:", e.message);
+    }
+  }
 
   const byOriginalGroup = new Map();
   for (const [tabId, gid] of Object.entries(snapshot.tabs)) {
@@ -597,3 +635,5 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // window exactly as the side panel's "Open demo window" button does. Only
 // code running inside the worker (DevTools, the debugging pipe) can reach it.
 globalThis.openDemo = () => handleMessage({ type: "OPEN_DEMO", windowId: 0 });
+// Same trust level, for scripted end-to-end checks: devMessage({ type, windowId }).
+globalThis.devMessage = (msg) => handleMessage(msg);
