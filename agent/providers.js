@@ -5,8 +5,13 @@
 // planTabs() in agent/plan.js handles parsing, validation, retry, and fallback.
 //
 // Every adapter must:
-//   - read the API key from settings.apiKey (chrome.storage.local), never from config
+//   - read the API key from settings.apiKey, which planTabs() fills from
+//     settings.apiKeys[provider] (chrome.storage.local), never from config
 //   - never log the key or the request headers
+//   - never surface provider response bodies in thrown errors (they can echo
+//     request headers); status codes only
+//   - send the key only to its own fixed endpoint URL, which is a literal in
+//     this file, never a value read from storage or settings
 //   - return a string containing only the model's JSON output
 //   - list its selectable models in `models` (drives the Settings dropdown)
 //
@@ -16,6 +21,23 @@
 // host there too.
 
 import { MODEL_CONFIG } from "./config.js";
+
+// Keys are used as HTTP header values. Strip anything that is not printable
+// ASCII so a corrupted value cannot inject headers or throw a fetch error
+// whose message might quote the header.
+export function cleanApiKey(key) {
+  return String(key || "").replace(/[^\x21-\x7e]/g, "");
+}
+
+// Parse a provider response body without letting a parse error (which in V8
+// quotes a snippet of the body) reach the panel or the logs.
+async function readJson(res, label) {
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(`${label} returned a non-JSON response`);
+  }
+}
 
 async function fetchWithTimeout(url, init, timeoutMs) {
   const ctrl = new AbortController();
@@ -30,6 +52,8 @@ async function fetchWithTimeout(url, init, timeoutMs) {
 // --------------------------------------------------------------------------
 // Anthropic Messages API (spec section 7)
 // --------------------------------------------------------------------------
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+
 const anthropic = {
   label: "Anthropic (Claude)",
   keyLabel: "Anthropic API key",
@@ -50,12 +74,12 @@ const anthropic = {
       messages: [{ role: "user", content: JSON.stringify(user) }]
     };
     const res = await fetchWithTimeout(
-      "https://api.anthropic.com/v1/messages",
+      ANTHROPIC_URL,
       {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-api-key": settings.apiKey,
+          "x-api-key": cleanApiKey(settings.apiKey),
           "anthropic-version": "2023-06-01",
           "anthropic-beta": "server-side-fallback-2026-07-01",
           "anthropic-dangerous-direct-browser-access": "true"
@@ -65,7 +89,7 @@ const anthropic = {
       timeoutMs
     );
     if (!res.ok) throw new Error(`anthropic http ${res.status}`);
-    const data = await res.json();
+    const data = await readJson(res, "anthropic");
     if (data.stop_reason === "refusal") throw new Error("anthropic refusal");
     const text = data.content?.[0]?.text;
     if (typeof text !== "string") throw new Error("anthropic empty content");
@@ -92,11 +116,15 @@ function extractJson(text) {
 // jsonMode: "schema" (OpenAI strict json_schema), "object" (json_object), or "none"
 // (no response_format at all; the schema in the system prompt does the steering).
 function openaiCompatible({ label, keyLabel, hosts, defaults, models, baseUrl, jsonMode = "object" }) {
+  // The endpoint is fixed at definition time. It is deliberately not part of
+  // `defaults`/`opts`, so nothing in config overrides or settings can point a
+  // key at another host (spec N4).
+  const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
   return {
     label,
     keyLabel,
     hosts,
-    defaults: { baseUrl, maxTokens: 4096, ...defaults },
+    defaults: { maxTokens: 4096, ...defaults },
     models,
 
     async call({ system, user, schema, settings, opts, timeoutMs }) {
@@ -127,13 +155,12 @@ function openaiCompatible({ label, keyLabel, hosts, defaults, models, baseUrl, j
       // Per-model request extras (for example, turning off thinking mode).
       Object.assign(base, models.find((m) => m.id === opts.model)?.extra || {});
 
-      const url = `${opts.baseUrl.replace(/\/$/, "")}/chat/completions`;
       const post = (body) =>
         fetchWithTimeout(
           url,
           {
             method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${settings.apiKey}` },
+            headers: { "content-type": "application/json", authorization: `Bearer ${cleanApiKey(settings.apiKey)}` },
             body: JSON.stringify(body)
           },
           timeoutMs
@@ -144,7 +171,7 @@ function openaiCompatible({ label, keyLabel, hosts, defaults, models, baseUrl, j
       // the schema in the system prompt still steers the output.
       if (res.status === 400 && responseFormat) res = await post(base);
       if (!res.ok) throw new Error(`${label} http ${res.status}`);
-      const data = await res.json();
+      const data = await readJson(res, label);
       const choice = data.choices?.[0];
       if (!choice) throw new Error(`${label} no choices`);
       if (choice.finish_reason === "content_filter" || choice.message?.refusal) throw new Error(`${label} refusal`);
@@ -197,22 +224,35 @@ const nvidia = openaiCompatible({
   ]
 });
 
-export const PROVIDERS = { anthropic, openai, nvidia };
+export const PROVIDERS = Object.freeze({ anthropic, openai, nvidia });
+
+// Only these names are valid provider ids. A stored settings.provider that is
+// not one of them (including inherited names like "constructor") is rejected.
+export function isKnownProvider(name) {
+  return typeof name === "string" && Object.hasOwn(PROVIDERS, name);
+}
 
 // Resolve the active provider and its effective options from config plus
 // any runtime override saved in Settings (settings.provider, settings.model).
 export function resolveProvider(settings = {}) {
   const name = settings.provider || MODEL_CONFIG.provider;
+  if (!isKnownProvider(name)) throw new Error("unknown provider in settings");
   const provider = PROVIDERS[name];
-  if (!provider) throw new Error(`unknown provider "${name}"`);
   const known = provider.models.map((m) => m.id);
+  // Only the model id is taken from settings, and only when it is in the
+  // provider's own list. No endpoint, header, or other request field can be
+  // set from storage.
   const opts = {
     ...provider.defaults,
-    ...(MODEL_CONFIG.overrides[name] || {}),
-    ...(settings.model && known.includes(settings.model) ? { model: settings.model } : {})
+    ...(Object.hasOwn(MODEL_CONFIG.overrides, name) ? MODEL_CONFIG.overrides[name] : {}),
+    ...(typeof settings.model === "string" && known.includes(settings.model) ? { model: settings.model } : {})
   };
-  // Keys are stored per provider (settings.apiKeys[name]); settings.apiKey is
-  // the pre-per-provider fallback so an existing install keeps working.
-  const apiKey = (settings.apiKeys && settings.apiKeys[name]) || settings.apiKey || "";
+  delete opts.baseUrl;
+  // Keys are stored per provider only (settings.apiKeys[name]). The legacy
+  // single settings.apiKey is deliberately ignored here: it was minted for one
+  // vendor and must never be sent to another host. background.js migrates it
+  // once, on install/update, into apiKeys[MODEL_CONFIG.provider].
+  const keys = settings.apiKeys && typeof settings.apiKeys === "object" ? settings.apiKeys : {};
+  const apiKey = cleanApiKey((Object.hasOwn(keys, name) && keys[name]) || "");
   return { name, provider, opts, apiKey, timeoutMs: MODEL_CONFIG.timeoutMs };
 }

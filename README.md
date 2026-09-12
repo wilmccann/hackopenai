@@ -10,6 +10,8 @@ A Chrome extension that notices when a window gets crowded, offers to help, and 
 
 No build step, no dependencies. Edit a file, then click the reload icon on `chrome://extensions` (Developer mode must be on, or the reload disables the extension). Note that Chrome caches the MV3 service worker, so re-installing the same version without a reload keeps the old `background.js`.
 
+From the command line, `python3 tools/run-chrome.py` launches Google Chrome with a throwaway profile and loads the extension over a private DevTools pipe. The scratch profile holds any API key you paste into Settings and is deleted when the script exits (pass `--keep-profile` to keep it, then delete it yourself). Security notes: [SECURITY.md](SECURITY.md).
+
 ## Pick the model
 
 Edit [agent/config.js](agent/config.js). Set `provider` to `"anthropic"` (Claude Fable 5.1, default), `"openai"` (GPT-5.6 Terra by default), or `"nvidia"` (open models on NVIDIA NIM: DeepSeek V4 Flash by default, plus Nemotron 3 Super, gpt-oss-20b, GLM 5.3 Flash, Kimi K3). The Settings panel has a provider dropdown and a model dropdown that only lists the chosen provider's models. Keys are entered in Settings and stored in `chrome.storage.local`, never in the repo.
@@ -29,7 +31,7 @@ Press **Alt+Shift+D** in the side panel to reveal the dev section.
 npm test
 ```
 
-Runs the Node unit tests for the local logic (URL normalization, duplicates, stale, domain fallback, plan validation). No Chrome needed.
+Runs the Node unit tests for the local logic (URL normalization, duplicates, stale, domain fallback, plan validation) and the security invariants in [SECURITY.md](SECURITY.md) (provider whitelist, fixed endpoints, text sanitizing, no HTML sinks). No Chrome needed.
 
 ## Layout
 
@@ -45,4 +47,6 @@ agent/local.js         normalizeUrl, findDuplicates, findStale, domainFallbackPl
 agent/schema.json      the plan JSON schema (the A/B contract)
 demo/                  demo tab set and opener
 test/                  Node unit tests
+tools/run-chrome.py    launch Chrome with a scratch profile and load the extension
+SECURITY.md            threat model, what is stored where, mitigations
 ```

@@ -1,7 +1,7 @@
 // HackyTab Agent service worker (spec sections 5, 9).
 // Counting, threshold detection, messaging, plan application, undo/redo.
 
-import { planTabs } from "./agent/plan.js";
+import { planTabs, sanitizeText, sameDomain, LIMITS } from "./agent/plan.js";
 import {
   findDuplicates,
   findStale,
@@ -9,8 +9,12 @@ import {
   mergeUnassignedByDomain,
   registrableDomain,
   hostOf,
+  fingerprintTabs,
+  remapPlan,
+  COLORS,
   GROUP_NONE
 } from "./agent/local.js";
+import { MODEL_CONFIG } from "./agent/config.js";
 import { openDemoWindow } from "./demo/open-demo.js";
 
 export const DEFAULT_SETTINGS = {
@@ -19,9 +23,9 @@ export const DEFAULT_SETTINGS = {
   staleHours: 24,
   provider: "",
   model: "",
-  apiKey: "",
   apiKeys: {},
   groupingBasis: "task",
+  sendPageText: true,
   paused: false
 };
 
@@ -49,6 +53,36 @@ async function getLastRun() {
 }
 async function setLastRun(lastRun) {
   await chrome.storage.local.set({ lastRun });
+}
+async function forgetLastRun() {
+  await chrome.storage.local.remove("lastRun");
+  await chrome.storage.session.remove("closed");
+}
+
+// The list of tabs closed through the review checklist (F22, F23) is browsing
+// history, so it lives in chrome.storage.session: it is gone when Chrome exits
+// and is never written to disk. It is keyed to one window.
+async function getClosed(windowId) {
+  const { closed } = await chrome.storage.session.get("closed");
+  return closed && closed.windowId === windowId && Array.isArray(closed.items) ? closed.items : [];
+}
+async function setClosed(windowId, items) {
+  await chrome.storage.session.set({ closed: { windowId, items } });
+}
+
+// F5: incognito windows are never organized, never scripted, and nothing
+// about them is written to storage.local. Every handler that acts on a window
+// goes through this first.
+async function assertNormalWindow(windowId) {
+  let win;
+  try {
+    win = await chrome.windows.get(windowId);
+  } catch {
+    throw new Error("That window is no longer open.");
+  }
+  if (win.incognito) throw new Error("HackyTab does not organize incognito windows.");
+  if (win.type !== "normal") throw new Error("HackyTab only organizes normal browser windows.");
+  return win;
 }
 
 // Per-window panel state lives in session storage so it survives worker restarts.
@@ -133,12 +167,33 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
     delete windows[windowId];
     await chrome.storage.local.set({ windows });
   }
+  // The cached plan and closed-tab list belong to this window only (M4).
+  const run = await getLastRun();
+  if (run && run.windowId === windowId) await forgetLastRun();
+  const { closed } = await chrome.storage.session.get("closed");
+  if (closed && closed.windowId === windowId) await chrome.storage.session.remove("closed");
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   const { settings } = await chrome.storage.local.get("settings");
-  if (!settings) await chrome.storage.local.set({ settings: DEFAULT_SETTINGS });
+  if (!settings) {
+    await chrome.storage.local.set({ settings: DEFAULT_SETTINGS });
+    return;
+  }
+  // One-time migration of the pre-per-provider settings.apiKey. It was typed
+  // for the provider configured at the time (MODEL_CONFIG.provider), so it
+  // goes into that slot only, and only if that slot is empty. The legacy
+  // field is then deleted; nothing reads it any more (spec N4).
+  if (Object.hasOwn(settings, "apiKey")) {
+    const next = { ...settings };
+    const legacy = typeof next.apiKey === "string" ? next.apiKey.trim() : "";
+    const apiKeys = next.apiKeys && typeof next.apiKeys === "object" ? { ...next.apiKeys } : {};
+    if (legacy && !apiKeys[MODEL_CONFIG.provider]) apiKeys[MODEL_CONFIG.provider] = legacy;
+    next.apiKeys = apiKeys;
+    delete next.apiKey;
+    await chrome.storage.local.set({ settings: next });
+  }
 });
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 
@@ -154,7 +209,8 @@ chrome.notifications.onClicked.addListener(async (id) => {
 chrome.commands.onCommand.addListener(async (command) => {
   if (command !== "replay-last-plan") return;
   const win = await chrome.windows.getLastFocused();
-  replay(win.id).catch((e) => setState(win.id, { phase: "error", message: e.message }));
+  if (win.incognito || win.type !== "normal") return; // F5: silently ignore, no state written
+  replay(win.id).catch((e) => setState(win.id, { phase: "error", message: sanitizeText(e.message, 300) }));
 });
 
 // ---------------------------------------------------------------------------
@@ -176,7 +232,13 @@ function toTabRecord(t) {
   };
 }
 
-async function collectExcerpt(tab) {
+// Excerpts are only collected for tabs the plan can actually act on. Pinned
+// tabs are never grouped or closed, and tabs already in a group are neither
+// stale candidates nor moved, so their page text would leave the browser for
+// nothing. The user can turn page text off entirely in Settings.
+async function collectExcerpt(tab, settings) {
+  if (settings.sendPageText === false) return "";
+  if (tab.pinned || (tab.groupId != null && tab.groupId !== GROUP_NONE)) return "";
   if (tab.discarded || !/^https?:/i.test(tab.url)) return "";
   const timeout = new Promise((resolve) => setTimeout(() => resolve(""), EXCERPT_TIMEOUT_MS));
   const inject = chrome.scripting
@@ -186,10 +248,10 @@ async function collectExcerpt(tab) {
   return Promise.race([inject, timeout]);
 }
 
-async function collectTabs(windowId) {
+async function collectTabs(windowId, settings) {
   const rawTabs = await chrome.tabs.query({ windowId });
   const tabs = rawTabs.map(toTabRecord);
-  const excerpts = await Promise.all(tabs.map(collectExcerpt));
+  const excerpts = await Promise.all(tabs.map((t) => collectExcerpt(t, settings)));
   tabs.forEach((t, i) => (t.excerpt = excerpts[i])); // N5: sent to the model, not stored
   return { rawTabs, tabs };
 }
@@ -219,7 +281,9 @@ async function applyPlan(windowId, plan, rawTabs) {
     if (tabIds.length === 0) continue;
     try {
       const gid = await chrome.tabs.group({ tabIds, createProperties: { windowId } }); // F17
-      await chrome.tabGroups.update(gid, { title: group.title, color: group.color, collapsed: false });
+      const title = sanitizeText(group.title, LIMITS.groupTitle) || "Group";
+      const color = COLORS.includes(group.color) ? group.color : "grey";
+      await chrome.tabGroups.update(gid, { title, color, collapsed: false });
       created.push(gid);
     } catch (e) {
       console.warn("group failed:", group.key, e.message);
@@ -241,10 +305,27 @@ function buildReview(plan, tabs) {
   const row = (id, reason, checked) => {
     const t = byId.get(id);
     if (!t) return null;
-    return { tabId: id, title: t.title || t.url, domain: registrableDomain(hostOf(t.url)), favIconUrl: t.favIconUrl, reason, checked };
+    // No favIconUrl: it is page-controlled. The panel asks Chrome's favicon
+    // cache for `url` instead (see sidepanel.js faviconFor).
+    return {
+      tabId: id,
+      title: sanitizeText(t.title, LIMITS.title) || sanitizeText(t.url, LIMITS.url),
+      url: /^https?:/i.test(t.url) ? t.url : "",
+      domain: registrableDomain(hostOf(t.url)),
+      reason: sanitizeText(reason, LIMITS.reason),
+      checked
+    };
   };
+  // A duplicate row is pre-checked only when the surviving tab is on the same
+  // site as the one being closed (H1). Anything else is shown unchecked.
   const duplicates = plan.duplicates
-    .map((d) => row(d.tab_id, d.reason || `Same page as "${byId.get(d.keep_tab_id)?.title || "another tab"}"`, true))
+    .map((d) => {
+      const keep = byId.get(d.keep_tab_id);
+      const t = byId.get(d.tab_id);
+      const r = row(d.tab_id, d.reason || `Same page as "${keep?.title || "another tab"}"`, !!keep && sameDomain(t, keep));
+      if (r && keep) r.keepDomain = registrableDomain(hostOf(keep.url));
+      return r;
+    })
     .filter(Boolean);
   const dupIds = new Set(duplicates.map((r) => r.tabId));
   const stale = plan.stale
@@ -257,9 +338,13 @@ function buildReview(plan, tabs) {
 async function finishRun(windowId, plan, rawTabs, tabs, source) {
   const snapshot = await takeSnapshot(windowId, rawTabs); // F16
   const createdGroupIds = await applyPlan(windowId, plan, rawTabs);
-  const previous = await getLastRun();
-  const closed = previous && previous.windowId === windowId ? previous.closed || [] : [];
-  await setLastRun({ windowId, snapshot, plan, createdGroupIds, closed, undone: false, at: Date.now() });
+  // N5: lastRun holds only what undo/redo/replay need (snapshot of group ids,
+  // the plan, created group ids, URL fingerprints). `tabs` with excerpts is
+  // dropped here and never written to storage; the closed-tab list lives in
+  // storage.session (getClosed). Tabs are fingerprinted by normalized URL so replay (N3) can find them
+  // again after Chrome has handed out new tab ids.
+  const closed = await getClosed(windowId);
+  await setLastRun({ windowId, snapshot, plan, createdGroupIds, fingerprints: fingerprintTabs(tabs), undone: false, at: Date.now() });
   await patchWindowState(windowId, { lastPromptedCount: rawTabs.length });
   const review = buildReview(plan, tabs);
   return setState(windowId, {
@@ -282,7 +367,7 @@ async function finishRun(windowId, plan, rawTabs, tabs, source) {
 async function organize(windowId) {
   const settings = await getSettings();
   await setState(windowId, { phase: "planning", count: await countTabs(windowId) }, { replace: true });
-  const { rawTabs, tabs } = await collectTabs(windowId);
+  const { rawTabs, tabs } = await collectTabs(windowId, settings);
   const duplicates = findDuplicates(tabs); // F11
   const stale = findStale(tabs, settings.staleHours); // F12
 
@@ -293,7 +378,7 @@ async function organize(windowId) {
   } catch (e) {
     console.warn("planTabs failed, using domain fallback:", e.message);
     plan = domainFallbackPlan(tabs, { duplicates, stale }); // F20
-    source = `fallback: ${e.message}`;
+    source = `fallback: ${sanitizeText(e.message, 300)}`;
   }
   plan = mergeUnassignedByDomain(plan, tabs); // section 6, option C
   await finishRun(windowId, plan, rawTabs, tabs, source);
@@ -302,27 +387,31 @@ async function organize(windowId) {
 // ---------------------------------------------------------------------------
 // Close, reopen (F22 to F24)
 // ---------------------------------------------------------------------------
+// Only tabs the last run listed as duplicate or stale, in the window that run
+// belongs to, can be closed here (L3). The panel is trusted, but the worker
+// re-derives the allowed set rather than closing whatever ids arrive.
 async function closeTabs(windowId, tabIds) {
-  const run = (await getLastRun()) || { windowId, closed: [] };
+  const run = await getLastRun();
+  if (!run || run.windowId !== windowId) throw new Error("The last plan belongs to a different window. Run Organize here first.");
+  const listed = new Set([...run.plan.duplicates.map((d) => d.tab_id), ...run.plan.stale.map((s) => s.tab_id)]);
   const byId = new Map((await chrome.tabs.query({ windowId })).map((t) => [t.id, t]));
-  const closing = (tabIds || []).map((id) => byId.get(id)).filter((t) => t && !t.pinned);
-  run.closed = [...(run.closed || []), ...closing.map((t) => ({ url: t.url, title: t.title }))];
-  await setLastRun(run);
+  const closing = (tabIds || []).map((id) => byId.get(id)).filter((t) => t && !t.pinned && listed.has(t.id));
+  const closed = [...(await getClosed(windowId)), ...closing.map((t) => ({ url: t.url, title: t.title }))];
+  await setClosed(windowId, closed);
   if (closing.length) await chrome.tabs.remove(closing.map((t) => t.id));
   await setState(windowId, {
     phase: "done",
     count: await countTabs(windowId),
     message: closing.length ? `Closed ${closing.length} tab${closing.length === 1 ? "" : "s"}.` : "Nothing closed.",
-    closedCount: run.closed.length
+    closedCount: closed.length
   });
 }
 
+// Closed tabs go back into the window they were closed from, never another.
 async function reopenClosed(windowId) {
-  const run = await getLastRun();
-  if (!run || !run.closed?.length) return;
-  const closed = run.closed;
-  run.closed = [];
-  await setLastRun(run);
+  const closed = await getClosed(windowId);
+  if (!closed.length) throw new Error("No tabs from this window to reopen.");
+  await chrome.storage.session.remove("closed");
   for (const c of closed) {
     try {
       await chrome.tabs.create({ windowId, url: c.url, active: false });
@@ -334,9 +423,10 @@ async function reopenClosed(windowId) {
 // ---------------------------------------------------------------------------
 // Undo, redo, replay (F25 to F27, N3)
 // ---------------------------------------------------------------------------
-async function undo() {
+async function undo(requestingWindowId) {
   const run = await getLastRun();
   if (!run || run.undone) return;
+  if (run.windowId !== requestingWindowId) throw new Error("The last plan belongs to a different window.");
   const { windowId, snapshot } = run;
   const current = await chrome.tabs.query({ windowId });
   const alive = new Set(current.map((t) => t.id));
@@ -376,9 +466,10 @@ async function undo() {
   await setState(windowId, { canUndo: false, canRedo: true, message: "Undo complete. Groups restored to how they were." });
 }
 
-async function redo() {
+async function redo(requestingWindowId) {
   const run = await getLastRun();
   if (!run || !run.undone) return;
+  if (run.windowId !== requestingWindowId) throw new Error("The last plan belongs to a different window.");
   const rawTabs = await chrome.tabs.query({ windowId: run.windowId });
   run.createdGroupIds = await applyPlan(run.windowId, run.plan, rawTabs);
   run.undone = false;
@@ -386,15 +477,19 @@ async function redo() {
   await setState(run.windowId, { canUndo: true, canRedo: false, message: "Plan re-applied." });
 }
 
+// N3. Tab ids are not stable across browser sessions, so the cached plan is
+// matched to the current window by URL fingerprint. Entries whose tab is gone
+// are dropped; if fewer than half of the plan's tabs are found, the plan is
+// judged to belong to some other set of tabs and replay is refused.
 async function replay(windowId) {
   const run = await getLastRun();
   if (!run) throw new Error("No cached plan yet. Run Organize once while online.");
   const { rawTabs, tabs } = await collectTabsWithoutExcerpts(windowId);
-  const alive = new Set(rawTabs.map((t) => t.id));
-  if (!run.plan.assignments.some((a) => alive.has(a.tab_id))) {
-    throw new Error("The cached plan does not match this window's tabs.");
+  const { plan, matched, total } = remapPlan(run.plan, run.fingerprints || {}, tabs);
+  if (total === 0 || matched * 2 < total) {
+    throw new Error(`The cached plan does not match this window's tabs (${matched} of ${total} found).`);
   }
-  await finishRun(windowId, run.plan, rawTabs, tabs, "replay");
+  await finishRun(windowId, plan, rawTabs, tabs, "replay");
 }
 
 async function collectTabsWithoutExcerpts(windowId) {
@@ -405,17 +500,22 @@ async function collectTabsWithoutExcerpts(windowId) {
 // ---------------------------------------------------------------------------
 // Messaging (spec section 9)
 // ---------------------------------------------------------------------------
+// Message types that act on a window's tabs or on stored run data. Each is
+// refused for incognito and non-normal windows before any work happens (M3).
+const WINDOW_ACTIONS = new Set(["ORGANIZE", "REPLAY", "CONFIRM_CLOSE", "REOPEN", "UNDO", "REDO"]);
+
 async function handleMessage({ type, windowId, payload }) {
+  if (WINDOW_ACTIONS.has(type)) await assertNormalWindow(windowId);
   switch (type) {
     case "GET_STATE": {
       await chrome.action.setBadgeText({ text: "" }).catch(() => {});
       const state = await getState(windowId);
       if (state.phase === "idle") state.count = await countTabs(windowId);
       const run = await getLastRun();
-      return { state, hasCachedPlan: !!run, closedCount: run?.windowId === windowId ? run.closed?.length || 0 : 0 };
+      return { state, hasCachedPlan: !!run, closedCount: (await getClosed(windowId)).length };
     }
     case "ORGANIZE":
-      organize(windowId).catch((e) => setState(windowId, { phase: "error", message: e.message }));
+      organize(windowId).catch((e) => setState(windowId, { phase: "error", message: sanitizeText(e.message, 300) }));
       return { ok: true };
     case "DISMISS": // F8, Not now
       await setState(windowId, { phase: "idle", count: await countTabs(windowId) }, { replace: true });
@@ -425,7 +525,7 @@ async function handleMessage({ type, windowId, payload }) {
       await setState(windowId, { phase: "idle", never: true, count: await countTabs(windowId) }, { replace: true });
       return { ok: true };
     case "CONFIRM_CLOSE": // F22
-      await closeTabs(windowId, payload?.tabIds || []);
+      await closeTabs(windowId, (Array.isArray(payload?.tabIds) ? payload.tabIds : []).filter(Number.isInteger));
       return { ok: true };
     case "SKIP_CLOSE": // F24
       await setState(windowId, { phase: "done", message: "Left everything open." });
@@ -434,13 +534,19 @@ async function handleMessage({ type, windowId, payload }) {
       await reopenClosed(windowId);
       return { ok: true };
     case "UNDO":
-      await undo();
+      await undo(windowId);
       return { ok: true };
     case "REDO":
-      await redo();
+      await redo(windowId);
       return { ok: true };
+    case "FORGET_LAST_RUN": { // Settings button: wipe the cached plan, snapshot, and closed-tab list.
+      const run = await getLastRun();
+      await forgetLastRun();
+      if (run) await setState(run.windowId, { canUndo: false, canRedo: false, closedCount: 0 });
+      return { ok: true };
+    }
     case "REPLAY":
-      replay(windowId).catch((e) => setState(windowId, { phase: "error", message: e.message }));
+      replay(windowId).catch((e) => setState(windowId, { phase: "error", message: sanitizeText(e.message, 300) }));
       return { ok: true };
     case "SETTINGS_CHANGED": // F29: settings are read fresh on every use; re-check windows now.
       for (const w of await chrome.windows.getAll({ windowTypes: ["normal"] })) evaluateWindow(w.id).catch(() => {});
@@ -464,8 +570,25 @@ async function handleMessage({ type, windowId, payload }) {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+// Only this extension's own pages (side panel) may drive the worker. Messages
+// from other extensions, from content scripts (sender.tab is set), or from any
+// non-extension URL are ignored. There is no externally_connectable entry in
+// the manifest, so web pages cannot reach onMessage at all; this is the second
+// line of defense.
+function isTrustedSender(sender) {
+  if (!sender || sender.id !== chrome.runtime.id) return false;
+  if (sender.tab || sender.frameId) return false;
+  const origin = chrome.runtime.getURL("");
+  return typeof sender.url === "string" && sender.url.startsWith(origin);
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!isTrustedSender(sender)) return false;
   if (!msg || typeof msg.type !== "string") return false;
-  handleMessage(msg).then(sendResponse, (e) => sendResponse({ error: e.message }));
+  if (!Number.isInteger(msg.windowId)) {
+    sendResponse({ error: "invalid windowId" });
+    return false;
+  }
+  handleMessage(msg).then(sendResponse, (e) => sendResponse({ error: sanitizeText(e.message, 300) }));
   return true;
 });

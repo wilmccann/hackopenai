@@ -40,8 +40,11 @@
     .empty { color:var(--muted); font-style:italic; padding:4px 0; }
     details { margin-top:18px; border-top:1px solid var(--line); padding-top:8px; }
     summary { cursor:pointer; font-weight:600; }
-    label.field { display:block; margin:10px 0 0; }
-    label.field span { display:block; font-size:12px; color:var(--muted); margin-bottom:3px; }
+    .field { display:block; margin:10px 0 0; }
+    .field > span { display:block; font-size:12px; color:var(--muted); margin-bottom:3px; }
+    .keyrow { margin:0 0 6px; align-items:center; }
+    .keyrow button { padding:2px 8px; font-size:12px; }
+    .hint { font-size:11px; color:var(--muted); margin:2px 0 0 24px; }
     input[type=number], input[type=text], input[type=password], select { width:100%; font:inherit; padding:5px 7px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
     label.check { display:flex; align-items:center; gap:8px; margin-top:10px; }
     .error { color:var(--danger); }
@@ -125,9 +128,14 @@
       </label>
       <label class="field"><span>Model provider</span><select name="provider"></select></label>
       <label class="field"><span>Model</span><select name="model"></select></label>
-      <label class="field"><span id="apikey-label">API key</span><input type="password" name="apiKey" autocomplete="off"></label>
+      <div class="field"><span id="apikey-label">API key</span>
+        <div class="row keyrow"><span id="apikey-status"></span><button type="button" id="btn-key-replace" hidden>Replace</button><button type="button" id="btn-key-clear" hidden>Clear</button></div>
+        <input type="password" name="apiKey" autocomplete="off" aria-labelledby="apikey-label" placeholder="Paste a key to store it">
+      </div>
+      <label class="check"><input type="checkbox" name="sendPageText"> Send page text to the model</label>
+      <p class="hint">Off: only tab titles and URLs (without query strings) are sent. On: also a page's description or the first 300 characters of its main content.</p>
       <label class="check"><input type="checkbox" name="paused"> Pause HackyTab</label>
-      <div class="row"><button type="button" id="btn-reset-never">Reset "Never" list</button></div>
+      <div class="row"><button type="button" id="btn-reset-never">Reset "Never" list</button><button type="button" id="btn-forget-run">Forget last run</button></div>
     </form>
   </details>
 

@@ -10,7 +10,8 @@
     "sidePanel",
     "storage",
     "scripting",
-    "notifications"
+    "notifications",
+    "favicon"
   ],
   "host_permissions": [
     "<all_urls>",

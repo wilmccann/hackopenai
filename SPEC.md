@@ -62,9 +62,9 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 
 ### 5.3 Collection
 - F9. On Yes, gather every tab in the window: `id`, `index`, `title`, `url`, `pinned`, `audible`, `lastAccessed`, `groupId`, `favIconUrl`.
-- F10. For each http(s) tab, inject a content script via `chrome.scripting.executeScript` that returns up to 300 characters of visible text (meta description if present, else first text of `<main>` or `<body>`). Timeout 1500 ms per tab. Skip discarded tabs and chrome:// pages. Missing excerpts are allowed; the plan must still succeed.
-- F11. Normalize URLs locally: lowercase host, strip fragment, strip `utm_*`, `fbclid`, `gclid`, `ref`, `mc_*` parameters, strip trailing slash. Group by normalized URL. Every tab beyond the first in a group is a duplicate candidate. Keep the most recently accessed tab as the survivor.
-- F12. Stale candidates: `lastAccessed` older than 24 hours, or already discarded by Chrome (memory saver), not pinned, not audible, not in a group already. The discarded signal is what makes stale tabs demo-able in a freshly opened window.
+- F10. For each http(s) tab that is not pinned and not already in a group, inject a content script via `chrome.scripting.executeScript` that returns up to 300 characters of page text: the meta description if present, else the first text of `<main>`. There is no `<body>` fallback (the first lines of webmail, banking, and console pages are the user's private data). Timeout 1500 ms per tab. Skip discarded tabs, pinned tabs, grouped tabs, and chrome:// pages. The Settings toggle "Send page text to the model" (default on) turns excerpts off entirely. Missing excerpts are allowed; the plan must still succeed. URLs sent to the model are reduced to scheme, host, and path: query strings, fragments, and credentials are stripped first.
+- F11. Normalize URLs locally: lowercase host, strip fragment, strip `utm_*`, `fbclid`, `gclid`, `ref`, `mc_*` parameters, strip trailing slash. Group by normalized URL. Every tab beyond the first in a group is a duplicate candidate. Keep the most recently accessed tab as the survivor. The model may confirm or reject candidates but cannot add to them: a plan duplicate is accepted only when its exact `(tab_id, keep_tab_id)` pair is a local candidate and both tabs share a registrable domain; anything else is a validation error and is dropped by `sanitizePlan`. A duplicate row whose surviving tab is on a different site is never pre-checked.
+- F12. Stale candidates: `lastAccessed` older than 24 hours, or already discarded by Chrome (memory saver), not pinned, not audible, not in a group already. The discarded signal is what makes stale tabs demo-able in a freshly opened window. As with F11, a plan stale entry is accepted only when the tab is a local stale candidate.
 
 ### 5.4 Planning (model call)
 - F13. Send the tab list (with excerpts, duplicate candidates, stale candidates) to Claude Fable 5.1 in one request. Details in section 7.
@@ -80,8 +80,8 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 
 ### 5.6 Review and close
 - F21. After apply, the side panel shows two sections: Duplicates and Stale. Each row: favicon, title, domain, reason, checkbox. Duplicates are checked by default. Stale are unchecked by default.
-- F22. Confirm closes checked tabs with `chrome.tabs.remove`. Before closing, record their URLs and titles in `lastClosed` so they can be reopened.
-- F23. A "Reopen closed tabs" link restores every tab from `lastClosed` into the same window.
+- F22. Confirm closes checked tabs with `chrome.tabs.remove`. Only tabs that the last run listed as duplicate or stale, in the window that run belongs to, can be closed; a request from another window is refused. Before closing, record their URLs and titles in `chrome.storage.session` (`closed: { windowId, items }`) so they can be reopened. This list is never written to disk and is cleared when its window closes.
+- F23. A "Reopen closed tabs" link restores every tab from the session `closed` list into the window they were closed from. A request from a different window is refused.
 - F24. Skip leaves everything open.
 
 ### 5.7 Undo
@@ -90,7 +90,7 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 - F27. Only the last run is undoable.
 
 ### 5.8 Settings
-- F28. Side panel Settings section: threshold (number, min 5, max 100), re-prompt delta (default 5), stale age in hours (default 24), model provider (dropdown, populated from `PROVIDERS` in `agent/providers.js`), model (dropdown, populated from the selected provider's `models` list, first option is the provider default), API key (password field, one stored per provider in `settings.apiKeys`, label comes from the provider's `keyLabel`), grouping basis (see section 6), pause toggle, "Reset Never list."
+- F28. Side panel Settings section: threshold (number, min 5, max 100), re-prompt delta (default 5), stale age in hours (default 24), model provider (dropdown, populated from `PROVIDERS` in `agent/providers.js`), model (dropdown, populated from the selected provider's `models` list, first option is the provider default), API key (password field, one stored per provider in `settings.apiKeys`, label comes from the provider's `keyLabel`; the stored key is never written back into the field, the panel shows "Key set (…last4)" with Replace and Clear buttons and a key is saved only when the user types one), "Send page text to the model" toggle (default on, F10), grouping basis (see section 6), pause toggle, "Reset Never list", "Forget last run" (wipes `lastRun` and the closed-tab list).
 - F29. Settings persist in `chrome.storage.local` and take effect immediately without reload.
 
 ## 6. Grouping basis (CLOSED)
@@ -246,24 +246,31 @@ icons/                 toolbar and notification icons
 test/local.test.js     Node unit tests for agent/local.js and plan validation (`npm test`, no deps)
 ```
 
-**Permissions:** `tabs`, `tabGroups`, `sidePanel`, `storage`, `scripting`, `notifications`. **Host permissions:** `<all_urls>` (for excerpts), `https://api.anthropic.com/*`, `https://api.openai.com/*`, and `https://integrate.api.nvidia.com/*`. Adding a provider means adding its host here; `host_permissions` is static in MV3.
+**Permissions:** `tabs`, `tabGroups`, `sidePanel`, `storage`, `scripting`, `notifications`, `favicon` (review-row icons come from Chrome's favicon cache, never from a page's `favIconUrl`; see SECURITY.md). **Host permissions:** `<all_urls>` (for excerpts), `https://api.anthropic.com/*`, `https://api.openai.com/*`, and `https://integrate.api.nvidia.com/*`. Adding a provider means adding its host here; `host_permissions` is static in MV3.
 
-**Messaging:** side panel and service worker talk over `chrome.runtime.sendMessage` with `{ type, windowId, payload }`. The panel sends requests; the worker pushes `STATE` with the window's full panel state `{ phase, count, summary, groups, review, canUndo, canRedo, closedCount, message }` where `phase` is one of `idle | prompt | planning | review | done | error`. Panel to worker types: `GET_STATE`, `ORGANIZE`, `DISMISS`, `NEVER`, `CONFIRM_CLOSE`, `SKIP_CLOSE`, `REOPEN`, `UNDO`, `REDO`, `REPLAY`, `SETTINGS_CHANGED`, `RESET_NEVER`, `OPEN_DEMO`. Per-window panel state is kept in `chrome.storage.session` so it survives service worker restarts.
+**Messaging:** side panel and service worker talk over `chrome.runtime.sendMessage` with `{ type, windowId, payload }`. The panel sends requests; the worker pushes `STATE` with the window's full panel state `{ phase, count, summary, groups, review, canUndo, canRedo, closedCount, message }` where `phase` is one of `idle | prompt | planning | review | done | error`. Panel to worker types: `GET_STATE`, `ORGANIZE`, `DISMISS`, `NEVER`, `CONFIRM_CLOSE`, `SKIP_CLOSE`, `REOPEN`, `UNDO`, `REDO`, `REPLAY`, `SETTINGS_CHANGED`, `RESET_NEVER`, `FORGET_LAST_RUN`, `OPEN_DEMO`. `ORGANIZE`, `REPLAY`, `CONFIRM_CLOSE`, `REOPEN`, `UNDO`, and `REDO` (and the replay keyboard command) are refused with a message for incognito and non-normal windows (F5). Per-window panel state is kept in `chrome.storage.session` so it survives service worker restarts.
 
 **State in `chrome.storage.local`:**
 ```
-settings: { threshold, repromptDelta, staleHours, provider, model, apiKeys: { [provider]: key }, groupingBasis, paused }
+settings: { threshold, repromptDelta, staleHours, provider, model, apiKeys: { [provider]: key }, groupingBasis, sendPageText, paused }
 windows:  { [windowId]: { lastPromptedCount, never } }
-lastRun:  { windowId, snapshot, plan, createdGroupIds, undone, closed: [{url,title}] }
+lastRun:  { windowId, snapshot, plan, createdGroupIds, fingerprints: { [tabId]: normalizedUrl }, undone, at }
+```
+`lastRun` is deleted when its window closes or when the user presses "Forget last run". The pre-per-provider `settings.apiKey` field is migrated once in `onInstalled` into `apiKeys[MODEL_CONFIG.provider]` and deleted; nothing reads it.
+
+**State in `chrome.storage.session`** (memory only, gone when Chrome exits):
+```
+state:<windowId>: panel state
+closed: { windowId, items: [{url,title}] }
 ```
 
 ## 10. Non-functional requirements
 
 - N1. Prompt appears within 500 ms of crossing the threshold.
 - N2. Plan applied within 8 s for up to 40 tabs; hard timeout at 15 s then fallback plan.
-- N3. Extension works offline for the demo via a cached plan (`lastRun.plan`) replayed with a "Replay last plan" button in the hidden dev section (Alt+Shift+D in the panel) or the `Cmd/Ctrl+Shift+Y` extension command.
-- N4. API key never leaves `chrome.storage.local` except in the request header to api.anthropic.com. Never logged.
-- N5. Page excerpts are sent to the model and not stored.
+- N3. Extension works offline for the demo via a cached plan (`lastRun.plan`) replayed with a "Replay last plan" button in the hidden dev section (Alt+Shift+D in the panel) or the `Cmd/Ctrl+Shift+Y` extension command. Chrome reuses numeric tab ids across sessions, so the cached plan is matched to the current window by URL fingerprint (`normalizeUrl`, stored as `lastRun.fingerprints`): every entry is rewritten to the current tab id with the same fingerprint, entries with no match are dropped, and replay is refused when fewer than half of the plan's tabs are found.
+- N4. API key never leaves `chrome.storage.local` except in the request header to the selected provider's fixed host (api.anthropic.com, api.openai.com, integrate.api.nvidia.com). Never logged, never in state, `lastRun`, or error text. Provider ids are whitelisted; no endpoint is ever read from storage. Keys are per provider only: a key stored for one provider is never sent to another, and the legacy single `settings.apiKey` is migrated once and then ignored. The panel never writes a stored key back into the DOM. See SECURITY.md.
+- N5. Page excerpts are sent to the model and not stored. URLs lose their query string, fragment, and credentials before the request; titles, URLs, and excerpts are control-character-stripped and length-capped, and the system prompt marks them as untrusted data. Excerpts are collected only from tabs the plan can act on (not pinned, not already grouped) and can be turned off in Settings. Incognito windows are never read.
 - N6. No external dependencies. Plain JavaScript, no bundler.
 
 ## 11. Demo script (Person C)

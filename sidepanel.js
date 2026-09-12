@@ -1,10 +1,11 @@
 // HackyTab Agent side panel (spec 5.2, 5.6, 5.8). State-driven: the worker
 // pushes STATE messages, the panel renders them.
 
-import { PROVIDERS } from "./agent/providers.js";
+import { PROVIDERS, isKnownProvider } from "./agent/providers.js";
 import { MODEL_CONFIG } from "./agent/config.js";
+import { COLORS } from "./agent/local.js";
 
-const DEFAULT_SETTINGS = { threshold: 15, repromptDelta: 5, staleHours: 24, provider: "", model: "", apiKey: "", apiKeys: {}, groupingBasis: "task", paused: false };
+const DEFAULT_SETTINGS = { threshold: 15, repromptDelta: 5, staleHours: 24, provider: "", model: "", apiKeys: {}, groupingBasis: "task", sendPageText: true, paused: false };
 const $ = (sel) => document.querySelector(sel);
 
 let windowId = null;
@@ -21,24 +22,42 @@ function flash(text) {
   el.hidden = !text;
 }
 
+// Favicons come from Chrome's own favicon cache via the extension's
+// _favicon endpoint ("favicon" permission), never from the icon URL a page
+// declares for itself (chrome.tabs.Tab.favIconUrl is not used). That endpoint only accepts http(s) page URLs, makes no network
+// request, and cannot be pointed at data:/javascript:/tracking URLs.
+const FALLBACK_ICON = "icons/icon16.png";
+function faviconFor(pageUrl) {
+  if (typeof pageUrl !== "string" || !/^https?:\/\//i.test(pageUrl)) return FALLBACK_ICON;
+  return chrome.runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(pageUrl)}&size=16`);
+}
+
 function renderRow(row, listEl) {
   const li = document.createElement("li");
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.checked = !!row.checked;
-  cb.dataset.tabId = String(row.tabId);
+  cb.dataset.tabId = String(Number.isInteger(row.tabId) ? row.tabId : -1);
   const img = document.createElement("img");
-  img.src = row.favIconUrl || "icons/icon16.png";
+  img.src = faviconFor(row.url);
   img.alt = "";
-  img.onerror = () => (img.src = "icons/icon16.png");
+  img.referrerPolicy = "no-referrer";
+  img.onerror = () => {
+    img.onerror = null;
+    img.src = FALLBACK_ICON;
+  };
   const text = document.createElement("div");
   const title = document.createElement("div");
   title.className = "title";
-  title.textContent = row.title;
-  title.title = row.title;
+  // All page- and model-derived strings are rendered as text nodes only.
+  title.textContent = String(row.title ?? "");
+  title.title = String(row.title ?? "");
   const sub = document.createElement("div");
   sub.className = "sub";
-  sub.textContent = `${row.domain} · ${row.reason}`;
+  // For duplicates, name the site of the tab that stays open so a keep-swap
+  // onto a look-alike host is visible; such rows are never pre-checked.
+  const keep = row.keepDomain ? ` · keeps ${String(row.keepDomain)}` : "";
+  sub.textContent = `${String(row.domain ?? "")} · ${String(row.reason ?? "")}${keep}`;
   text.append(title, sub);
   li.append(cb, img, text);
   listEl.append(li);
@@ -77,8 +96,9 @@ function render(next) {
     for (const g of state.groups || []) {
       const c = document.createElement("span");
       c.className = "chip";
-      c.style.background = `var(--${g.color})`;
-      c.textContent = g.title;
+      // Color is a CSS variable name; only Chrome's own enum values are allowed.
+      c.style.background = `var(--${COLORS.includes(g.color) ? g.color : "grey"})`;
+      c.textContent = String(g.title ?? "");
       chips.append(c);
     }
     $("#review-source").textContent = state.source && state.source !== "model" ? `Plan source: ${state.source}` : "";
@@ -133,7 +153,7 @@ document.addEventListener("keydown", (e) => {
 // Settings (F28, F29)
 // ---------------------------------------------------------------------------
 function effectiveProvider() {
-  return settings.provider || MODEL_CONFIG.provider;
+  return isKnownProvider(settings.provider) ? settings.provider : MODEL_CONFIG.provider;
 }
 
 function fillSettingsForm() {
@@ -152,7 +172,7 @@ function fillSettingsForm() {
   }
   for (const [k, v] of Object.entries(settings)) {
     const el = form.elements[k];
-    if (!el || k === "apiKey") continue;
+    if (!el || k === "apiKey" || k === "apiKeys") continue;
     if (el.type === "checkbox") el.checked = !!v;
     else el.value = v ?? "";
   }
@@ -160,7 +180,24 @@ function fillSettingsForm() {
 }
 
 function keyFor(name) {
-  return (settings.apiKeys && settings.apiKeys[name]) || settings.apiKey || "";
+  const keys = settings.apiKeys && typeof settings.apiKeys === "object" ? settings.apiKeys : {};
+  return (Object.hasOwn(keys, name) && keys[name]) || "";
+}
+
+// The stored key is never written back into the DOM (L1). The field is shown
+// empty; the panel only reports that a key exists and its last 4 characters.
+// A key is written to storage only when the user types one.
+let replacingKey = false;
+function renderKeyStatus() {
+  const form = $("#settings-form");
+  const key = keyFor(effectiveProvider());
+  const input = form.elements.apiKey;
+  input.value = "";
+  const has = !!key;
+  $("#apikey-status").textContent = has ? `Key set (…${key.length > 8 ? key.slice(-4) : "****"})` : "No key set";
+  input.hidden = has && !replacingKey;
+  $("#btn-key-replace").hidden = !has || replacingKey;
+  $("#btn-key-clear").hidden = !has;
 }
 
 // The model dropdown only ever shows the selected provider's models (F28).
@@ -184,7 +221,7 @@ function fillModelSelect() {
   }
   const known = (p?.models || []).some((m) => m.id === settings.model);
   sel.value = known ? settings.model : "";
-  form.elements.apiKey.value = keyFor(name);
+  renderKeyStatus();
 }
 
 async function saveSettings() {
@@ -192,18 +229,28 @@ async function saveSettings() {
   const next = { ...settings };
   for (const k of Object.keys(DEFAULT_SETTINGS)) {
     const el = form.elements[k];
-    if (!el || k === "apiKey") continue;
+    if (!el || k === "apiKeys") continue;
     if (el.type === "checkbox") next[k] = el.checked;
     else if (el.type === "number") next[k] = Number(el.value) || DEFAULT_SETTINGS[k];
     else next[k] = el.value.trim();
   }
   next.threshold = Math.min(100, Math.max(5, next.threshold));
+  // Provider ids are whitelisted; anything else falls back to the config default ("").
+  if (next.provider && !isKnownProvider(next.provider)) next.provider = "";
+  if (!["task", "website"].includes(next.groupingBasis)) next.groupingBasis = "task";
   const providerChanged = next.provider !== settings.provider;
   if (providerChanged) next.model = "";
   // The key field belongs to the provider that was showing when it was typed.
+  // An empty field means "leave the stored key alone", never "clear it";
+  // clearing is the explicit Clear button.
   const keyOwner = providerChanged ? effectiveProvider() : next.provider || MODEL_CONFIG.provider;
-  next.apiKeys = { ...(settings.apiKeys || {}), [keyOwner]: form.elements.apiKey.value.trim() };
-  next.apiKey = "";
+  const apiKeys = {};
+  for (const name of Object.keys(PROVIDERS)) if (settings.apiKeys?.[name]) apiKeys[name] = settings.apiKeys[name];
+  const typed = form.elements.apiKey.value.trim();
+  if (typed) apiKeys[keyOwner] = typed;
+  next.apiKeys = apiKeys;
+  delete next.apiKey; // legacy single-key field is never written again (N4)
+  replacingKey = false;
   settings = next;
   await chrome.storage.local.set({ settings });
   fillSettingsForm();
@@ -216,12 +263,34 @@ $("#btn-reset-never").addEventListener("click", async () => {
   await send("RESET_NEVER");
   flash("Cleared the Never list.");
 });
+$("#btn-forget-run").addEventListener("click", async () => {
+  await send("FORGET_LAST_RUN");
+  flash("Forgot the last run: cached plan, snapshot, and closed-tab list are gone.");
+});
+$("#btn-key-replace").addEventListener("click", () => {
+  replacingKey = true;
+  renderKeyStatus();
+  $("#settings-form").elements.apiKey.focus();
+});
+$("#btn-key-clear").addEventListener("click", async () => {
+  const name = effectiveProvider();
+  const apiKeys = { ...(settings.apiKeys && typeof settings.apiKeys === "object" ? settings.apiKeys : {}) };
+  delete apiKeys[name];
+  settings = { ...settings, apiKeys };
+  delete settings.apiKey;
+  await chrome.storage.local.set({ settings });
+  replacingKey = false;
+  fillSettingsForm();
+  flash(`Cleared the ${PROVIDERS[name]?.keyLabel || "API key"}.`);
+});
 
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.type === "STATE" && msg.windowId === windowId) render(msg.payload);
+// Only accept STATE pushes from this extension's own service worker.
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (!sender || sender.id !== chrome.runtime.id || sender.tab) return;
+  if (msg?.type === "STATE" && msg.windowId === windowId && msg.payload && typeof msg.payload === "object") render(msg.payload);
 });
 
 (async function init() {
@@ -229,6 +298,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   windowId = win.id;
   const stored = await chrome.storage.local.get("settings");
   settings = { ...DEFAULT_SETTINGS, ...(stored.settings || {}) };
+  delete settings.apiKey; // pre-migration field, if any: never read, never re-saved
   fillSettingsForm();
   const res = await send("GET_STATE");
   if (res?.state) render({ ...res.state, closedCount: res.closedCount });

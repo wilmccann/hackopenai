@@ -138,3 +138,43 @@ export function mergeUnassignedByDomain(plan, tabs) {
   }
   return { ...plan, groups, assignments };
 }
+
+// N3 replay. Chrome reuses numeric tab ids across sessions, so a cached plan is
+// keyed by URL fingerprint (normalizeUrl) instead. `fingerprints` is
+// { [oldTabId]: fingerprint } saved with the plan; `tabs` are the window's
+// current tabs. Returns the plan rewritten with current ids, dropping every
+// entry whose tab no longer exists, plus how many of the plan's tabs matched.
+export function fingerprintTabs(tabs) {
+  const out = {};
+  for (const t of tabs) if (t.url) out[t.id] = normalizeUrl(t.url);
+  return out;
+}
+
+export function remapPlan(plan, fingerprints, tabs) {
+  const byFp = new Map();
+  for (const t of [...tabs].sort((a, b) => (a.index ?? 0) - (b.index ?? 0))) {
+    if (!t.url) continue;
+    const fp = normalizeUrl(t.url);
+    if (!byFp.has(fp)) byFp.set(fp, []);
+    byFp.get(fp).push(t.id);
+  }
+  const referenced = new Set();
+  for (const a of plan.assignments || []) referenced.add(a.tab_id);
+  for (const d of plan.duplicates || []) referenced.add(d.tab_id), referenced.add(d.keep_tab_id);
+  for (const s of plan.stale || []) referenced.add(s.tab_id);
+  const idMap = new Map();
+  for (const oldId of [...referenced].sort((a, b) => a - b)) {
+    const list = byFp.get((fingerprints || {})[oldId]);
+    if (list && list.length) idMap.set(oldId, list.shift());
+  }
+  const m = (id) => idMap.get(id);
+  const remapped = {
+    ...plan,
+    assignments: (plan.assignments || []).filter((a) => idMap.has(a.tab_id)).map((a) => ({ ...a, tab_id: m(a.tab_id) })),
+    duplicates: (plan.duplicates || [])
+      .filter((d) => idMap.has(d.tab_id) && idMap.has(d.keep_tab_id))
+      .map((d) => ({ ...d, tab_id: m(d.tab_id), keep_tab_id: m(d.keep_tab_id) })),
+    stale: (plan.stale || []).filter((s) => idMap.has(s.tab_id)).map((s) => ({ ...s, tab_id: m(s.tab_id) }))
+  };
+  return { plan: remapped, matched: idMap.size, total: referenced.size };
+}
