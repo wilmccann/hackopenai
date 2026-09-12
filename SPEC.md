@@ -93,9 +93,9 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 - F28. Side panel Settings section: threshold (number, min 5, max 100), re-prompt delta (default 5), stale age in hours (default 24), API key (password field), grouping basis (see section 6), pause toggle, "Reset Never list."
 - F29. Settings persist in `chrome.storage.local` and take effect immediately without reload.
 
-## 6. Grouping basis (OPEN)
+## 6. Grouping basis (CLOSED)
 
-Three options. Recommendation is option C.
+Use Hybrid option (#C below): 
 
 | Option | What the model does | Pros | Cons |
 |---|---|---|---|
