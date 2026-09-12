@@ -242,6 +242,7 @@ agent/local.js         normalizeUrl(), findDuplicates(), findStale(), domainFall
 agent/schema.json      the plan schema above
 demo/tabs.json         Person C's messy window as a URL list, also B's test fixture
 demo/open-demo.js      opens demo/tabs.json into a fresh window; discards the tabs marked stale
+tools/demo.pl (.sh)    one-command demo start: scratch Chrome, load extension, open demo/tabs.json
 icons/                 toolbar and notification icons
 test/local.test.js     Node unit tests for agent/local.js and plan validation (`npm test`, no deps)
 ```
@@ -275,10 +276,10 @@ closed: { windowId, items: [{url,title}] }
 
 ## 11. Demo script (Person C)
 
-1. Fresh window opened from `demo/tabs.json`: 22 tabs. Two work projects, a trip, shopping, three duplicates, two stale tabs. Open it from the side panel's hidden dev section (Alt+Shift+D, "Open demo window"). The opener pre-sets the window so the prompt fires after exactly two more tabs.
-2. Open two more tabs by hand. The toolbar badge shows 24 and a toast appears (see section 14, item 3). Click the toolbar icon. The side panel opens with the prompt.
+1. Run `tools/demo.sh`. It launches a scratch Chrome, loads the extension, and opens a fresh window from `demo/tabs.json`: 17 tabs. Google search, Gmail, Calendar, three news tabs (two nytimes.com, news.google.com) plus one nytimes duplicate, seven retail sites, three stale tabs (discarded on open). The same window can be opened from the side panel's hidden dev section (Alt+Shift+D, "Open demo window"). The opener pre-sets the window so the prompt fires after exactly two more tabs.
+2. Open two more tabs by hand. The toolbar badge shows 19 and a toast appears (see section 14, item 3). Click the toolbar icon. The side panel opens with the prompt.
 3. Click Yes. Spinner for a few seconds. Tab strip reorganizes into 4 or 5 named colored groups.
-4. Panel shows 3 duplicates checked and 2 stale unchecked. Check one stale, press Confirm. Four tabs close.
+4. Panel shows 1 duplicate checked and 3 stale unchecked. Check one stale, press Confirm. Two tabs close.
 5. Press Undo. Groups dissolve. Press Redo. They return.
 6. Open Settings, change threshold to 10, show that it took effect.
 Backup: screen recording of the same flow, recorded by 3:15.

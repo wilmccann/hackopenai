@@ -592,3 +592,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   handleMessage(msg).then(sendResponse, (e) => sendResponse({ error: sanitizeText(e.message, 300) }));
   return true;
 });
+
+// Dev hook for tools/demo.pl and the worker DevTools console: opens the demo
+// window exactly as the side panel's "Open demo window" button does. Only
+// code running inside the worker (DevTools, the debugging pipe) can reach it.
+globalThis.openDemo = () => handleMessage({ type: "OPEN_DEMO", windowId: 0 });

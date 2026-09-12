@@ -20,9 +20,17 @@ To add another provider, add an entry to `PROVIDERS` in [agent/providers.js](age
 
 ## Demo
 
-Press **Alt+Shift+D** in the side panel to reveal the dev section.
+One command gives a clean starting point every time:
 
-- **Open demo window** opens the 22 tabs from [demo/tabs.json](demo/tabs.json). Open two more tabs by hand and the prompt appears.
+```bash
+tools/demo.sh
+```
+
+It opens Chrome with a throwaway profile, loads the extension, and opens the 17 tabs from [demo/tabs.json](demo/tabs.json) in a fresh window: Google search, Gmail, Calendar, three news tabs (two nytimes.com, news.google.com, plus one duplicate), seven retail sites, and three stale tabs that are discarded so they show up in the clean-up list. Open two more tabs by hand and the prompt appears. Quit Chrome or press Ctrl+C to finish; the profile is deleted (pass `--keep-profile` to keep it). Any API key must be entered in Settings after each launch.
+
+The same window can be opened from inside the extension: press **Alt+Shift+D** in the side panel to reveal the dev section.
+
+- **Open demo window** opens the tabs from [demo/tabs.json](demo/tabs.json). Open two more tabs by hand and the prompt appears.
 - **Replay last plan** re-applies the last cached plan without a network call (offline fallback). Also bound to Cmd/Ctrl+Shift+Y.
 
 ## Tests
@@ -47,6 +55,7 @@ agent/local.js         normalizeUrl, findDuplicates, findStale, domainFallbackPl
 agent/schema.json      the plan JSON schema (the A/B contract)
 demo/                  demo tab set and opener
 test/                  Node unit tests
-tools/run-chrome.py    launch Chrome with a scratch profile and load the extension
+tools/demo.sh, demo.pl launch Chrome with a scratch profile, load the extension, open the demo tabs
+tools/run-chrome.py    same launch without the demo tabs
 SECURITY.md            threat model, what is stored where, mitigations
 ```
