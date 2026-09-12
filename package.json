@@ -1,0 +1,10 @@
+{
+  "name": "hackytab-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome extension. No dependencies, no build step. package.json exists only so `npm test` runs the Node unit tests.",
+  "scripts": {
+    "test": "node --test test/"
+  }
+}

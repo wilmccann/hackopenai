@@ -1,0 +1,59 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["groups", "assignments", "duplicates", "stale", "summary"],
+  "properties": {
+    "summary": { "type": "string", "description": "One sentence shown to the user, e.g. 'Grouped 22 tabs into 4 tasks, found 3 duplicates.'" },
+    "groups": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "title", "color"],
+        "properties": {
+          "key": { "type": "string" },
+          "title": { "type": "string" },
+          "color": { "type": "string", "enum": ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"] }
+        }
+      }
+    },
+    "assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tab_id", "group_key"],
+        "properties": {
+          "tab_id": { "type": "integer" },
+          "group_key": { "type": "string" }
+        }
+      }
+    },
+    "duplicates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tab_id", "keep_tab_id", "reason"],
+        "properties": {
+          "tab_id": { "type": "integer" },
+          "keep_tab_id": { "type": "integer" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "stale": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tab_id", "reason"],
+        "properties": {
+          "tab_id": { "type": "integer" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

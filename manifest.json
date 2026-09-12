@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "HackyTab Agent",
+  "version": "0.1.0",
+  "description": "Notices when a window gets crowded, offers to help, then groups, names, colors, and dedupes your tabs by what you are doing. Asks before closing anything.",
+  "minimum_chrome_version": "121",
+  "permissions": ["tabs", "tabGroups", "sidePanel", "storage", "scripting", "notifications"],
+  "host_permissions": ["<all_urls>", "https://api.anthropic.com/*", "https://integrate.api.nvidia.com/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "action": { "default_title": "HackyTab Agent" },
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "commands": {
+    "replay-last-plan": {
+      "suggested_key": { "default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y" },
+      "description": "Replay the last plan (offline demo fallback)"
+    }
+  }
+}

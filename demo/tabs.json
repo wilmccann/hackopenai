@@ -1,0 +1,32 @@
+{
+  "name": "Messy demo window (spec section 11)",
+  "notes": "22 tabs. Two work projects, a trip, shopping, three duplicates (marked), two stale (marked; open-demo.js discards them so they count as stale).",
+  "tabs": [
+    { "url": "https://react.dev/reference/react/useEffect", "topic": "react-debugging" },
+    { "url": "https://stackoverflow.com/questions/53332321/react-hook-warnings-for-async-function-in-useeffect-useeffect-function-must-ret", "topic": "react-debugging" },
+    { "url": "https://github.com/facebook/react/issues/14326", "topic": "react-debugging" },
+    { "url": "https://developer.mozilla.org/en-US/docs/Web/API/AbortController", "topic": "react-debugging" },
+    { "url": "https://react.dev/reference/react/useEffect?utm_source=slack&utm_medium=share", "topic": "react-debugging", "duplicate": true },
+
+    { "url": "https://www.atlassian.com/agile/project-management/okrs", "topic": "q3-planning" },
+    { "url": "https://en.wikipedia.org/wiki/Objectives_and_key_results", "topic": "q3-planning" },
+    { "url": "https://asana.com/resources/quarterly-planning", "topic": "q3-planning" },
+    { "url": "https://www.productplan.com/glossary/quarterly-planning/", "topic": "q3-planning" },
+
+    { "url": "https://www.lonelyplanet.com/portugal/lisbon", "topic": "lisbon-trip" },
+    { "url": "https://en.wikipedia.org/wiki/Lisbon", "topic": "lisbon-trip" },
+    { "url": "https://www.skyscanner.com/", "topic": "lisbon-trip" },
+    { "url": "https://www.airbnb.com/s/Lisbon--Portugal/homes", "topic": "lisbon-trip" },
+    { "url": "https://en.wikipedia.org/wiki/Lisbon#Climate", "topic": "lisbon-trip", "duplicate": true },
+
+    { "url": "https://www.nytimes.com/wirecutter/reviews/best-standing-desk/", "topic": "desk-shopping" },
+    { "url": "https://www.ikea.com/us/en/cat/desks-tables-20649/", "topic": "desk-shopping" },
+    { "url": "https://www.amazon.com/s?k=standing+desk", "topic": "desk-shopping" },
+    { "url": "https://www.bestbuy.com/site/searchpage.jsp?st=standing+desk", "topic": "desk-shopping" },
+    { "url": "https://www.nytimes.com/wirecutter/reviews/best-standing-desk/?ref=twitter", "topic": "desk-shopping", "duplicate": true },
+
+    { "url": "https://news.ycombinator.com/item?id=1", "topic": "stale", "stale": true },
+    { "url": "https://en.wikipedia.org/wiki/Sourdough", "topic": "stale", "stale": true },
+    { "url": "https://www.bbc.com/news", "topic": "misc" }
+  ]
+}

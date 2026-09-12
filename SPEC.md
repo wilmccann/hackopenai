@@ -64,7 +64,7 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 - F9. On Yes, gather every tab in the window: `id`, `index`, `title`, `url`, `pinned`, `audible`, `lastAccessed`, `groupId`, `favIconUrl`.
 - F10. For each http(s) tab, inject a content script via `chrome.scripting.executeScript` that returns up to 300 characters of visible text (meta description if present, else first text of `<main>` or `<body>`). Timeout 1500 ms per tab. Skip discarded tabs and chrome:// pages. Missing excerpts are allowed; the plan must still succeed.
 - F11. Normalize URLs locally: lowercase host, strip fragment, strip `utm_*`, `fbclid`, `gclid`, `ref`, `mc_*` parameters, strip trailing slash. Group by normalized URL. Every tab beyond the first in a group is a duplicate candidate. Keep the most recently accessed tab as the survivor.
-- F12. Stale candidates: `lastAccessed` older than 24 hours, not pinned, not audible, not in a group already.
+- F12. Stale candidates: `lastAccessed` older than 24 hours, or already discarded by Chrome (memory saver), not pinned, not audible, not in a group already. The discarded signal is what makes stale tabs demo-able in a freshly opened window.
 
 ### 5.4 Planning (model call)
 - F13. Send the tab list (with excerpts, duplicate candidates, stale candidates) to Claude Fable 5.1 in one request. Details in section 7.
@@ -90,7 +90,7 @@ HackyTab Agent is a Chrome extension (Manifest V3). It watches tab counts per wi
 - F27. Only the last run is undoable.
 
 ### 5.8 Settings
-- F28. Side panel Settings section: threshold (number, min 5, max 100), re-prompt delta (default 5), stale age in hours (default 24), API key (password field), grouping basis (see section 6), pause toggle, "Reset Never list."
+- F28. Side panel Settings section: threshold (number, min 5, max 100), re-prompt delta (default 5), stale age in hours (default 24), model provider (dropdown, populated from `PROVIDERS` in `agent/providers.js`), model id (text, blank means provider default), API key (password field, label comes from the provider's `keyLabel`), grouping basis (see section 6), pause toggle, "Reset Never list."
 - F29. Settings persist in `chrome.storage.local` and take effect immediately without reload.
 
 ## 6. Grouping basis (CLOSED)
@@ -107,12 +107,19 @@ Decision needed by 1:15 pm. It changes Person B's prompt but not the schema.
 
 ## 7. Model integration
 
-**Provider:** Anthropic Messages API, `POST https://api.anthropic.com/v1/messages`.
-**Model:** `claude-fable-5-1`.
-**Where the call runs:** the extension service worker, using `fetch`. No build step, no bundler, no SDK. The API key is read from `chrome.storage.local`. Add `https://api.anthropic.com/*` to `host_permissions` so the request is not subject to page CORS. If the API still rejects a browser-origin request, add the header `anthropic-dangerous-direct-browser-access: true`.
-**Isolation:** one module, `agent/plan.js`, exports `async function planTabs(tabs, settings) -> Plan`. Nothing else in the extension knows which provider is behind it.
+**Provider selection:** `agent/config.js` is the single file that picks the model. It exports `MODEL_CONFIG = { provider, overrides, timeoutMs }`. `agent/providers.js` holds one adapter per provider; each adapter exposes `{ label, keyLabel, hosts, defaults, call() }`. Two ship today:
 
-**Request shape**
+| Name | Endpoint | Default model | Structured output |
+|---|---|---|---|
+| `anthropic` (default) | `POST https://api.anthropic.com/v1/messages` | `claude-fable-5-1` | Native `output_config.format` json_schema |
+| `nvidia` | `POST https://integrate.api.nvidia.com/v1/chat/completions` (OpenAI-compatible NIM) | `moonshotai/kimi-k2-instruct`, or any hosted open model such as GLM | `response_format: json_object` plus schema in the system prompt; local validation (F14) is the contract |
+
+Switching to an open model is a one-line change (`provider: "nvidia"`) plus the matching key in Settings. The Settings dropdown can also override the provider and model id at runtime without a reload (F28, F29). The NVIDIA adapter is built from a generic `openaiCompatible()` factory, so any other OpenAI-style endpoint is a new `PROVIDERS` entry with a different `baseUrl`.
+
+**Where the call runs:** the extension service worker, using `fetch`. No build step, no bundler, no SDK. The API key is read from `chrome.storage.local`. List every provider host in `host_permissions` (`https://api.anthropic.com/*`, `https://integrate.api.nvidia.com/*`) so requests are not subject to page CORS. Anthropic requests send `anthropic-dangerous-direct-browser-access: true`.
+**Isolation:** `agent/plan.js` exports `async function planTabs(tabs, settings) -> Plan`. It calls `resolveProvider(settings)` from `agent/providers.js`, hands the system prompt, user payload, and schema to `provider.call()`, then parses and validates. Nothing outside `agent/` knows which provider is behind it.
+
+**Anthropic request shape (the `anthropic` adapter)**
 
 ```json
 {
@@ -132,7 +139,13 @@ Decision needed by 1:15 pm. It changes Person B's prompt but not the schema.
 
 Headers: `content-type: application/json`, `x-api-key: <key>`, `anthropic-version: 2023-06-01`, `anthropic-beta: server-side-fallback-2026-07-01`.
 
-**Fable 5.1 rules that matter here**
+**Open model rules that matter (the `nvidia` adapter)**
+- Send `temperature` (default 0.2) and `max_tokens`. Do not send `output_config`, `effort`, or `anthropic-*` headers.
+- Some open models wrap JSON in a markdown fence or emit reasoning text first. The adapter strips fences and takes the outermost `{...}` before returning. F14 validation and retry still apply.
+- Confirm the exact model id on the model's page at build.nvidia.com before the demo. Ids change between releases.
+- Latency varies more than Fable. Keep the 15 s hard timeout (N2) and the domain fallback (F20).
+
+**Fable 5.1 rules that matter here (the `anthropic` adapter)**
 - Do not send a `thinking` parameter. Thinking is always on. Depth is controlled by `output_config.effort`. Use `low` for speed; raise to `medium` only if plans look thin.
 - Do not send `temperature`, `top_p`, or `top_k`. They are rejected.
 - Do not use forced `tool_choice`. Structured output via `output_config.format` is the right tool for "just give me JSON."
@@ -216,40 +229,44 @@ The color enum is exactly Chrome's `tabGroups.ColorEnum`. Local validation after
 
 ```
 manifest.json
-background.js          service worker: counting, threshold, messaging, apply, undo
-sidepanel.html/.js     prompt, spinner, review checklist, settings
+background.js          service worker: counting, threshold, messaging, apply, undo, redo, replay
+sidepanel.html/.js     prompt, spinner, review checklist, settings, hidden dev section (Alt+Shift+D)
 content/excerpt.js     injected on demand, returns page excerpt
-agent/plan.js          planTabs(): builds request, calls Claude, validates plan
+agent/plan.js          planTabs(): builds prompt, calls the active provider, validates plan
+agent/config.js        MODEL_CONFIG: the one file to edit to swap the model (provider, model id, effort)
+agent/providers.js     PROVIDERS registry: anthropic, nvidia (OpenAI-compatible); resolveProvider()
 agent/local.js         normalizeUrl(), findDuplicates(), findStale(), domainFallbackPlan()
 agent/schema.json      the plan schema above
 demo/tabs.json         Person C's messy window as a URL list, also B's test fixture
-demo/open-demo.js      opens demo/tabs.json into a fresh window
+demo/open-demo.js      opens demo/tabs.json into a fresh window; discards the tabs marked stale
+icons/                 toolbar and notification icons
+test/local.test.js     Node unit tests for agent/local.js and plan validation (`npm test`, no deps)
 ```
 
-**Permissions:** `tabs`, `tabGroups`, `sidePanel`, `storage`, `scripting`, `notifications`. **Host permissions:** `<all_urls>` (for excerpts) and `https://api.anthropic.com/*`.
+**Permissions:** `tabs`, `tabGroups`, `sidePanel`, `storage`, `scripting`, `notifications`. **Host permissions:** `<all_urls>` (for excerpts), `https://api.anthropic.com/*`, and `https://integrate.api.nvidia.com/*`. Adding a provider means adding its host here; `host_permissions` is static in MV3.
 
-**Messaging:** side panel and service worker talk over `chrome.runtime.sendMessage` with `{ type, windowId, payload }`. Types: `PROMPT`, `ORGANIZE`, `PLAN_READY`, `APPLY_DONE`, `CONFIRM_CLOSE`, `UNDO`, `REDO`, `SETTINGS_CHANGED`.
+**Messaging:** side panel and service worker talk over `chrome.runtime.sendMessage` with `{ type, windowId, payload }`. The panel sends requests; the worker pushes `STATE` with the window's full panel state `{ phase, count, summary, groups, review, canUndo, canRedo, closedCount, message }` where `phase` is one of `idle | prompt | planning | review | done | error`. Panel to worker types: `GET_STATE`, `ORGANIZE`, `DISMISS`, `NEVER`, `CONFIRM_CLOSE`, `SKIP_CLOSE`, `REOPEN`, `UNDO`, `REDO`, `REPLAY`, `SETTINGS_CHANGED`, `RESET_NEVER`, `OPEN_DEMO`. Per-window panel state is kept in `chrome.storage.session` so it survives service worker restarts.
 
 **State in `chrome.storage.local`:**
 ```
-settings: { threshold, repromptDelta, staleHours, apiKey, groupingBasis, paused }
+settings: { threshold, repromptDelta, staleHours, provider, model, apiKey, groupingBasis, paused }
 windows:  { [windowId]: { lastPromptedCount, never } }
-lastRun:  { windowId, snapshot, plan, closed: [{url,title}] }
+lastRun:  { windowId, snapshot, plan, createdGroupIds, undone, closed: [{url,title}] }
 ```
 
 ## 10. Non-functional requirements
 
 - N1. Prompt appears within 500 ms of crossing the threshold.
 - N2. Plan applied within 8 s for up to 40 tabs; hard timeout at 15 s then fallback plan.
-- N3. Extension works offline for the demo via a cached plan (`lastRun.plan`) replayed with a "Replay last plan" button hidden behind a keyboard shortcut.
+- N3. Extension works offline for the demo via a cached plan (`lastRun.plan`) replayed with a "Replay last plan" button in the hidden dev section (Alt+Shift+D in the panel) or the `Cmd/Ctrl+Shift+Y` extension command.
 - N4. API key never leaves `chrome.storage.local` except in the request header to api.anthropic.com. Never logged.
 - N5. Page excerpts are sent to the model and not stored.
 - N6. No external dependencies. Plain JavaScript, no bundler.
 
 ## 11. Demo script (Person C)
 
-1. Fresh window opened from `demo/tabs.json`: 22 tabs. Two work projects, a trip, shopping, three duplicates, two stale tabs.
-2. Open two more tabs by hand. Side panel slides in with the prompt.
+1. Fresh window opened from `demo/tabs.json`: 22 tabs. Two work projects, a trip, shopping, three duplicates, two stale tabs. Open it from the side panel's hidden dev section (Alt+Shift+D, "Open demo window"). The opener pre-sets the window so the prompt fires after exactly two more tabs.
+2. Open two more tabs by hand. The toolbar badge shows 24 and a toast appears (see section 14, item 3). Click the toolbar icon. The side panel opens with the prompt.
 3. Click Yes. Spinner for a few seconds. Tab strip reorganizes into 4 or 5 named colored groups.
 4. Panel shows 3 duplicates checked and 2 stale unchecked. Check one stale, press Confirm. Four tabs close.
 5. Press Undo. Groups dissolve. Press Redo. They return.
@@ -270,13 +287,13 @@ Backup: screen recording of the same flow, recorded by 3:15.
 | Model output fails schema | Structured output format plus local validation plus one retry plus domain fallback. |
 | Excerpt injection slow on heavy pages | 1500 ms per-tab timeout, excerpts optional. |
 | Demo Wi-Fi fails | Cached plan replay, backup video. |
-| Judges expect an OpenAI model | Provider isolated in `agent/plan.js`. Swap is one file. Be ready to explain the choice. |
+| Judges expect an OpenAI or open-source model | Provider isolated behind `agent/config.js` and `agent/providers.js`. Switching to Kimi or GLM on NVIDIA NIM is one line plus a key. Be ready to demo the switch live. |
 
 ## 14. Open items
 
 1. **Grouping basis** (section 6). Recommend C. Decide by 1:15.
 2. Who holds the API key for the demo machine, and is it funded.
-3. Side panel `open()` gesture behavior on the demo machine's Chrome version. Person A reports by 1:10.
+3. ~~Side panel `open()` gesture behavior on the demo machine's Chrome version.~~ RESOLVED 1:50 pm on Chrome 152: `sidePanel.open` throws when called from a `tabs.onCreated` handler (no user gesture). The F6 fallback fires instead: badge shows the count, a notification appears, and clicking the toolbar icon or the notification opens the panel in the prompt state. Demo step 2 should say "the badge lights up and a toast appears" rather than "the side panel slides in".
 
 ## 15. Acceptance checklist
 
@@ -287,3 +304,4 @@ Backup: screen recording of the same flow, recorded by 3:15.
 - [ ] Undo restores pre-run groups. Redo re-applies.
 - [ ] Threshold change in Settings takes effect without reload.
 - [ ] Killing the network and pressing Replay still reorganizes the tab strip.
+- [ ] Setting `provider: "nvidia"` in `agent/config.js` (or via Settings) and entering an NVIDIA key produces a valid plan from an open model.

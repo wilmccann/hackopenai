@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HackyTab Agent</title>
+  <style>
+    :root {
+      --bg: #ffffff; --fg: #1f1f1f; --muted: #5f6368; --line: #e0e0e0;
+      --accent: #1a73e8; --accent-fg: #fff; --danger: #d93025; --card: #f8f9fa;
+      --blue:#8ab4f8; --red:#f28b82; --yellow:#fdd663; --green:#81c995; --pink:#ff8bcb;
+      --purple:#c58af9; --cyan:#78d9ec; --orange:#fcad70; --grey:#dadce0;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#202124; --fg:#e8eaed; --muted:#9aa0a6; --line:#3c4043; --card:#292a2d; --grey:#5f6368; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:14px; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--fg); background:var(--bg); }
+    h1 { font-size:15px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
+    h1 .badge { font-size:11px; font-weight:500; color:var(--muted); }
+    h2 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:16px 0 6px; }
+    p { margin:0 0 10px; }
+    .muted { color:var(--muted); }
+    .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    button { font:inherit; padding:6px 12px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+    button.primary { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
+    button.danger { color:var(--danger); }
+    button:disabled { opacity:.45; cursor:default; }
+    a.link { color:var(--accent); cursor:pointer; text-decoration:underline; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
+    .spinner { width:18px; height:18px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; display:inline-block; vertical-align:middle; margin-right:8px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    ul.list { list-style:none; margin:0; padding:0; }
+    ul.list li { display:grid; grid-template-columns:auto 16px 1fr; gap:8px; align-items:start; padding:6px 0; border-bottom:1px solid var(--line); }
+    ul.list li:last-child { border-bottom:none; }
+    ul.list img { width:16px; height:16px; margin-top:2px; }
+    ul.list .title { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    ul.list .sub { color:var(--muted); font-size:12px; }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+    .chip { padding:2px 8px; border-radius:10px; font-size:12px; color:#202124; }
+    .empty { color:var(--muted); font-style:italic; padding:4px 0; }
+    details { margin-top:18px; border-top:1px solid var(--line); padding-top:8px; }
+    summary { cursor:pointer; font-weight:600; }
+    label.field { display:block; margin:10px 0 0; }
+    label.field span { display:block; font-size:12px; color:var(--muted); margin-bottom:3px; }
+    input[type=number], input[type=text], input[type=password], select { width:100%; font:inherit; padding:5px 7px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+    label.check { display:flex; align-items:center; gap:8px; margin-top:10px; }
+    .error { color:var(--danger); }
+    .source { font-size:11px; color:var(--muted); margin-top:6px; }
+    #dev { border:1px dashed var(--line); border-radius:8px; padding:10px; margin-top:16px; }
+  </style>
+</head>
+<body>
+  <h1>HackyTab Agent <span class="badge" id="tabcount"></span></h1>
+
+  <section id="phase-idle" class="phase" hidden>
+    <p id="idle-text" class="muted"></p>
+    <div class="row"><button class="primary" data-action="ORGANIZE">Organize this window</button></div>
+  </section>
+
+  <section id="phase-prompt" class="phase" hidden>
+    <div class="card">
+      <p id="prompt-text"></p>
+      <div class="row">
+        <button class="primary" data-action="ORGANIZE">Yes</button>
+        <button data-action="DISMISS">Not now</button>
+        <button data-action="NEVER">Never for this window</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="phase-planning" class="phase" hidden>
+    <div class="card"><span class="spinner"></span>Reading your tabs</div>
+  </section>
+
+  <section id="phase-review" class="phase" hidden>
+    <p id="review-summary"></p>
+    <div class="chips" id="review-groups"></div>
+    <div class="source" id="review-source"></div>
+
+    <h2>Duplicates</h2>
+    <ul class="list" id="list-duplicates"></ul>
+    <h2>Stale</h2>
+    <ul class="list" id="list-stale"></ul>
+
+    <div class="row">
+      <button class="primary" data-action="CONFIRM_CLOSE" id="btn-confirm">Close checked tabs</button>
+      <button data-action="SKIP_CLOSE">Skip</button>
+    </div>
+    <div class="row">
+      <button data-action="UNDO" id="btn-undo-review">Undo</button>
+      <button data-action="REDO" id="btn-redo-review">Redo</button>
+    </div>
+  </section>
+
+  <section id="phase-done" class="phase" hidden>
+    <div class="card">
+      <p id="done-message"></p>
+      <p class="muted" id="done-summary"></p>
+      <p id="done-reopen" hidden><a class="link" data-action="REOPEN">Reopen closed tabs</a></p>
+      <div class="row">
+        <button data-action="UNDO" id="btn-undo-done">Undo</button>
+        <button data-action="REDO" id="btn-redo-done">Redo</button>
+        <button data-action="ORGANIZE">Organize again</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="phase-error" class="phase" hidden>
+    <div class="card">
+      <p class="error" id="error-message"></p>
+      <div class="row"><button class="primary" data-action="ORGANIZE">Try again</button></div>
+    </div>
+  </section>
+
+  <p id="flash" class="muted" hidden></p>
+
+  <details id="settings">
+    <summary>Settings</summary>
+    <form id="settings-form">
+      <label class="field"><span>Ask when a window reaches this many tabs</span><input type="number" name="threshold" min="5" max="100"></label>
+      <label class="field"><span>After "Not now", ask again after this many more tabs</span><input type="number" name="repromptDelta" min="1" max="50"></label>
+      <label class="field"><span>A tab is stale after this many hours</span><input type="number" name="staleHours" min="1" max="720"></label>
+      <label class="field"><span>Grouping basis</span>
+        <select name="groupingBasis"><option value="task">By task (model)</option><option value="website">By website</option></select>
+      </label>
+      <label class="field"><span>Model provider</span><select name="provider"></select></label>
+      <label class="field"><span>Model id (blank = provider default)</span><input type="text" name="model" placeholder=""></label>
+      <label class="field"><span id="apikey-label">API key</span><input type="password" name="apiKey" autocomplete="off"></label>
+      <label class="check"><input type="checkbox" name="paused"> Pause HackyTab</label>
+      <div class="row"><button type="button" id="btn-reset-never">Reset "Never" list</button></div>
+    </form>
+  </details>
+
+  <div id="dev" hidden>
+    <strong>Dev</strong> <span class="muted">(Alt+Shift+D)</span>
+    <div class="row">
+      <button data-action="REPLAY">Replay last plan</button>
+      <button data-action="OPEN_DEMO">Open demo window</button>
+    </div>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

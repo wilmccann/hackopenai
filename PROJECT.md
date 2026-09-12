@@ -32,7 +32,7 @@ The sponsor asked for agents that live inside tools people already use, not in a
 - Persisting groups across browser restarts or syncing across devices.
 - Firefox, Safari, Edge.
 - Reading page content beyond a short excerpt. No screenshots, no full DOM.
-- Accounts, backend, billing. The extension calls the OpenAI API directly with a key set in the options page.
+- Accounts, backend, billing. The extension calls the model API directly with a key set in the side panel.
 
 ## User flow for the demo
 
@@ -47,7 +47,7 @@ The sponsor asked for agents that live inside tools people already use, not in a
 
 - **Chrome extension, Manifest V3.** Service worker listens to tabs.onCreated and tabs.onUpdated. Popup or side panel for the prompt and the review checklist.
 - **Permissions:** tabs, tabGroups, storage, scripting (for the page excerpt), activeTab.
-- **Model:** Claude Fable 5.1 (`claude-fable-5-1`) via the Anthropic Messages API with a JSON schema output format. One call per organize run. The call lives behind one function so the provider can be swapped in minutes. Input is a JSON list of tabs. Output is a fixed JSON schema: groups[], assignments[], duplicates[], stale[].
+- **Model:** Claude Fable 5.1 (`claude-fable-5-1`) via the Anthropic Messages API with a JSON schema output format. One call per organize run. The call lives behind one function, and `agent/config.js` selects the provider, so swapping to an open model such as Kimi or GLM on NVIDIA NIM is a one-line change. Input is a JSON list of tabs. Output is a fixed JSON schema: groups[], assignments[], duplicates[], stale[].
 - **Stale heuristic:** last accessed more than 24 hours ago and not pinned, confirmed by the model as low value. Chrome exposes lastAccessed on tabs.
 - **Duplicates:** exact URL match after stripping tracking params. Done locally, no model needed.
 - **Storage:** chrome.storage.local for threshold, dismissals, API key, and the last plan for undo.
